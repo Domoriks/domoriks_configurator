@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QTabWidget, QPushButton, QMessageBox, QFileDialog,
                              QMenuBar, QMenu, QAction, QLabel, QStatusBar, QDialog,
                              QToolBar)
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QIcon
 
 from models.project import Project
@@ -30,16 +30,21 @@ class MainWindow(QMainWindow):
         self.config_manager = ConfigManager("../config")
         self.current_file = None
         
-        # Load default light points
-        self.project.set_light_points(self.config_manager.load_light_points())
-        
         self.setup_ui()
         self.setup_menu()
         self.setup_toolbar()
         self.setup_statusbar()
         
-        # Add a default device
-        self.add_device()
+        QTimer.singleShot(0, self.show_welcome_dialog)
+
+    def show_welcome_dialog(self):
+        """Show a welcome dialog to ask user for action."""
+        reply = QMessageBox.question(self, 'Welcome',
+            "Do you want to open an existing project?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+
+        if reply == QMessageBox.Yes:
+            self.open_project()
     
     def setup_ui(self):
         """Setup the user interface."""
@@ -199,15 +204,11 @@ class MainWindow(QMainWindow):
                 return
         
         self.project = Project("New Project")
-        self.project.set_light_points(self.config_manager.load_light_points())
         self.current_file = None
         self.project_label.setText(self.project.name)
         
         # Clear all device tabs
         self.device_tabs.clear()
-        
-        # Add default device
-        self.add_device()
         
         self.statusBar().showMessage("New project created")
     
