@@ -175,10 +175,6 @@ class MainWindow(QMainWindow):
         export_btn.clicked.connect(self.export_c_code)
         toolbar.addWidget(export_btn)
         
-        export_lightpoints_btn = QPushButton("Export Lightpoints C")
-        export_lightpoints_btn.clicked.connect(self.export_lightpoints_c_code)
-        toolbar.addWidget(export_lightpoints_btn)
-        
         toolbar.addSeparator()
         
         validate_btn = QPushButton("Validate")
@@ -347,12 +343,6 @@ class MainWindow(QMainWindow):
     def export_c_code(self):
         """Export configuration to C code."""
         c_code = self.project.to_c_code()
-        dialog = CCodeExportDialog(c_code, self)
-        dialog.exec_()
-
-    def export_lightpoints_c_code(self):
-        """Export light points to C code."""
-        c_code = self.config_manager.export_light_points_to_c(self.project.light_points)
         dialog = CCodeExportDialog(c_code, self)
         dialog.exec_()
     

@@ -1,6 +1,10 @@
 {
   "name": "Untitled Project",
   "light_points": {
+    "l255_All_Off": [
+      255,
+      255
+    ],
     "l32_inkom": [
       64,
       0
@@ -984,8 +988,8 @@
           "delay_action": "nop",
           "delay": 0,
           "brightness": 100,
-          "node": 0,
-          "output": 0,
+          "node": 255,
+          "output": 255,
           "extra_action_index": 0
         },
         "input1_doublePress": {

@@ -309,4 +309,35 @@ class DeviceWidget(QWidget):
     def update_light_points(self, light_points):
         """Update light points configuration."""
         self.light_points = light_points
-        # TODO: Refresh combo boxes
+        
+        new_items = ["(None)"] + sorted(light_points.keys())
+        
+        # Refresh combo boxes in input_table
+        for row in range(self.input_table.rowCount()):
+            combo = self.input_table.cellWidget(row, 4)
+            if isinstance(combo, QComboBox):
+                current_text = combo.currentText()
+                combo.clear()
+                combo.addItems(new_items)
+                
+                index = combo.findText(current_text)
+                if index != -1:
+                    combo.setCurrentIndex(index)
+                else:
+                    # If old value is gone, associated node/output must be cleared
+                    self.on_input_changed(row)
+
+        # Refresh combo boxes in extra_table
+        for row in range(self.extra_table.rowCount()):
+            combo = self.extra_table.cellWidget(row, 3)
+            if isinstance(combo, QComboBox):
+                current_text = combo.currentText()
+                combo.clear()
+                combo.addItems(new_items)
+
+                index = combo.findText(current_text)
+                if index != -1:
+                    combo.setCurrentIndex(index)
+                else:
+                    # If old value is gone, associated node/output must be cleared
+                    self.on_extra_changed(row)

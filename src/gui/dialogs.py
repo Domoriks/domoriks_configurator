@@ -250,6 +250,10 @@ class LightPointsEditorDialog(QDialog):
         import_btn = QPushButton("Import from C...")
         import_btn.clicked.connect(self.import_from_c)
         button_layout.addWidget(import_btn)
+
+        export_btn = QPushButton("Export to C...")
+        export_btn.clicked.connect(self.export_to_c)
+        button_layout.addWidget(export_btn)
         
         save_btn = QPushButton("Save")
         save_btn.clicked.connect(self.save_changes)
@@ -331,25 +335,47 @@ class LightPointsEditorDialog(QDialog):
         
         dialog.exec_()
     
-    def save_changes(self):
-        """Save changes to light points."""
-        new_light_points = {}
-        
+    def _get_light_points_from_table(self):
+        """Parse the table and return light points dictionary, or None on error."""
+        light_points = {}
         for row in range(self.table.rowCount()):
-            name = self.table.item(row, 0).text()
             try:
+                name = self.table.item(row, 0).text()
                 node = int(self.table.item(row, 1).text())
                 output = int(self.table.item(row, 2).text())
-                new_light_points[name] = [node, output]
-            except ValueError:
+
+                if not name:
+                    QMessageBox.warning(self, "Invalid Data", f"Row {row + 1}: Name cannot be empty.")
+                    return None
+
+                light_points[name] = [node, output]
+            except (ValueError, AttributeError):
                 QMessageBox.warning(
                     self, "Invalid Data",
-                    f"Row {row + 1}: Node and Output must be integers"
+                    f"Row {row + 1}: Ensure all fields are valid (integers for Node/Output)."
                 )
-                return
-        
-        self.light_points = new_light_points
-        self.accept()
+                return None
+        return light_points
+
+    def export_to_c(self):
+        """Export current light points to C code."""
+        light_points = self._get_light_points_from_table()
+        if light_points is None:
+            return  # Error message shown in helper
+
+        from utils.config import ConfigManager
+        config_mgr = ConfigManager()
+        c_code = config_mgr.export_light_points_to_c(light_points)
+
+        dialog = CCodeExportDialog(c_code, self)
+        dialog.exec_()
+
+    def save_changes(self):
+        """Save changes to light points."""
+        new_light_points = self._get_light_points_from_table()
+        if new_light_points is not None:
+            self.light_points = new_light_points
+            self.accept()
     
     def get_light_points(self):
         """Get the edited light points."""
