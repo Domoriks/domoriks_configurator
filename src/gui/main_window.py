@@ -1,7 +1,7 @@
 """
 Main application window for EventAction Configurator.
 """
-
+import os
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QTabWidget, QPushButton, QMessageBox, QFileDialog,
                              QMenuBar, QMenu, QAction, QLabel, QStatusBar, QDialog,
@@ -24,6 +24,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("EventAction Configurator")
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'domoriks.png')
+        self.setWindowIcon(QIcon(icon_path))
         self.setGeometry(100, 100, 1200, 800)
         
         self.project = Project()
