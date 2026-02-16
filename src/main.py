@@ -13,8 +13,8 @@ from gui.main_window import MainWindow
 def main():
     """Main application entry point."""
     app = QApplication(sys.argv)
-    app.setApplicationName("EventAction Configurator")
-    app.setOrganizationName("Home Automation")
+    app.setApplicationName("Domoriks Actions Configurator")
+    app.setOrganizationName("Domoriks")
     
     # Set application style
     app.setStyle("Fusion")

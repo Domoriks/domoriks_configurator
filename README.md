@@ -4,13 +4,13 @@ A professional home automation event configuration tool with bidirectional C-cod
 
 ## Features
 
-- ✅ **Bidirectional Conversion**: GUI ↔ C code
-- ✅ **Multi-Device Support**: Configure multiple devices in one project
-- ✅ **Config File Management**: Load/save light point configurations
-- ✅ **User-Friendly Qt Interface**: Modern, intuitive design
-- ✅ **Input Validation**: Prevents configuration errors
-- ✅ **Undo/Redo Support**: Safe editing experience
-- ✅ **Export/Import**: Share configurations easily
+- **Bidirectional Conversion**: GUI ↔ C code
+- **Multi-Device Support**: Configure multiple devices in one project
+- **Config File Management**: Load/save light point configurations
+- **User-Friendly Qt Interface**: Modern, intuitive design
+- **Input Validation**: Prevents configuration errors
+- **Undo/Redo Support**: Safe editing experience
+- **Export/Import**: Share configurations easily
 
 ## Installation
 
@@ -73,13 +73,11 @@ Light points configuration (JSON):
 
 ## Bug Fixes from Original
 
-1. ✅ Missing brightness field handling
-2. ✅ No validation on numeric inputs
-3. ✅ Inconsistent extraActionIndex handling
-4. ✅ No error handling for invalid light points
-5. ✅ GUI layout issues with large configurations
-6. ✅ No support for loading existing configurations
+1. Missing brightness field handling
+2. No validation on numeric inputs
+3. Inconsistent extraActionIndex handling
+4. No error handling for invalid light points
+5. GUI layout issues with large configurations
+6. No support for loading existing configurations
 
-## License
 
-MIT License

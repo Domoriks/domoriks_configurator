@@ -93,7 +93,7 @@
       "num_extra_actions": 20,
       "input_actions": {
         "input1_singlePress": {
-          "action": "nop",
+          "action": "toggle",
           "delay_action": "nop",
           "delay": 0,
           "brightness": 100,
@@ -183,7 +183,7 @@
           "extra_action_index": 0
         },
         "input4_doublePress": {
-          "action": "nop",
+          "action": "ondelayoff",
           "delay_action": "nop",
           "delay": 0,
           "brightness": 100,
@@ -682,7 +682,7 @@
       }
     },
     {
-      "name": "Schakelaar Trapbeneden",
+      "name": "Schakelaar trapbeneden",
       "num_inputs": 4,
       "num_extra_actions": 20,
       "input_actions": {
