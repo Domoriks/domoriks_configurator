@@ -12,12 +12,20 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QIcon
 from gui.main_window import MainWindow
 
+def resource_path(relative_path):
+    """
+    Get absolute path to resource, works for dev and for PyInstaller onefile.
+    """
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
+
 def main():
     """Main application entry point."""
     app = QApplication(sys.argv)
     
-    # Get the absolute path to the icon
-    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'domoriks.png')
+    # Set icon
+    icon_path = resource_path("domoriks.ico")
     app.setWindowIcon(QIcon(icon_path))
 
     app.setApplicationName("Domoriks Actions Configurator")

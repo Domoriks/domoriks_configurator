@@ -1,6 +1,7 @@
 """
 Main application window for EventAction Configurator.
 """
+import sys
 import os
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QTabWidget, QPushButton, QMessageBox, QFileDialog,
@@ -18,14 +19,21 @@ from utils.parser import CCodeParser
 from utils.config import ConfigManager
 
 
+def resource_path(relative_path):
+    """
+    Get absolute path to resource, works for dev and for PyInstaller onefile.
+    """
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
+
 class MainWindow(QMainWindow):
     """Main application window."""
     
     def __init__(self):
         super().__init__()
         self.setWindowTitle("EventAction Configurator")
-        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'domoriks.png')
-        self.setWindowIcon(QIcon(icon_path))
+        self.setWindowIcon(QIcon(resource_path("domoriks.ico")))
         self.setGeometry(100, 100, 1200, 800)
         
         self.project = Project()
