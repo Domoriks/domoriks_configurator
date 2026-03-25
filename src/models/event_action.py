@@ -5,7 +5,7 @@ EventAction data model representing a single event-action configuration.
 class EventAction:
     """Represents a single event action configuration."""
     
-    ACTIONS = ["nop", "toggle", "on", "off", "offdelayon", "ondelayoff"]
+    ACTIONS = ["nop", "toggle", "on", "off"]
     
     def __init__(self, name, action="nop", delay_action="nop", delay=0, 
                  brightness=100, node=0, output=0, reserved=0, extra_action_index=0):
@@ -24,50 +24,6 @@ class EventAction:
         return (f"EventAction {self.name} = {{ {self.action}, {self.delay_action}, "
                 f"{self.delay}, {self.brightness}, {self.node}, {self.output}, "
                 f"{self.reserved}, {self.extra_action_index} }};")
-    
-    @classmethod
-    def from_c_code(cls, c_line):
-        """Parse EventAction from C code line.
-        
-        Example: EventAction input1_singlePress = { on, off, 5000, 100, 64, 0, 0, 1 };
-        """
-        import re
-        
-        # Pattern to match EventAction declaration
-        pattern = r'EventAction\s+(\w+)\s*=\s*\{\s*(\w+)\s*,\s*(\w+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\};'
-        
-        match = re.match(pattern, c_line.strip())
-        if not match:
-            raise ValueError(f"Invalid EventAction format: {c_line}")
-        
-        name, action, delay_action, delay, brightness, node, output, reserved, extra_action_index = match.groups()
-        
-        return cls(
-            name=name,
-            action=action,
-            delay_action=delay_action,
-            delay=int(delay),
-            brightness=int(brightness),
-            node=int(node),
-            output=int(output),
-            reserved=int(reserved),
-            extra_action_index=int(extra_action_index)
-        )
-    
-    def resolve_composite_action(self):
-        """Resolve composite actions like ondelayoff -> (on, off)."""
-        if self.action == "ondelayoff":
-            return "on", "off"
-        elif self.action == "offdelayon":
-            return "off", "on"
-        return self.action, self.delay_action
-    
-    def set_light_point(self, light_points_dict, light_name):
-        """Set node and output from light point name."""
-        if light_name in light_points_dict:
-            self.node, self.output = light_points_dict[light_name]
-            return True
-        return False
     
     def get_light_point_name(self, light_points_dict):
         """Get light point name from node and output."""

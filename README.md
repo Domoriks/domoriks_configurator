@@ -11,6 +11,8 @@ A professional home automation event configuration tool with bidirectional C-cod
 - **Input Validation**: Prevents configuration errors
 - **Undo/Redo Support**: Safe editing experience
 - **Export/Import**: Share configurations easily
+- **C Code Parsing**: Parse and validate C code for EventAction declarations
+- **Project Validation**: Ensure all devices and configurations are correct
 
 ## Installation
 
@@ -79,5 +81,7 @@ Light points configuration (JSON):
 4. No error handling for invalid light points
 5. GUI layout issues with large configurations
 6. No support for loading existing configurations
+7. Added C code validation for missing semicolons and incorrect field counts
+8. Improved project validation to ensure all devices are correctly configured
 
 

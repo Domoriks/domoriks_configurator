@@ -5,27 +5,25 @@ import sys
 import os
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QTabWidget, QPushButton, QMessageBox, QFileDialog,
-                             QMenuBar, QMenu, QAction, QLabel, QStatusBar, QDialog,
-                             QToolBar)
-from PyQt5.QtCore import Qt, QTimer
+                             QAction, QLabel, QDialog, QToolBar, QListWidget,
+                             QStackedWidget, QSizePolicy, QLineEdit)
+from PyQt5.QtCore import QTimer
 from PyQt5.QtGui import QIcon
 
 from models.project import Project
-from models.device import Device
-from gui.device_widget import DeviceWidget
-from gui.dialogs import (CCodeImportDialog, CCodeExportDialog, 
-                        NewDeviceDialog, LightPointsEditorDialog)
+from models.module import Module
+from gui.module_widget import ModuleWidget
+from gui.dialogs import (CCodeImportDialog, CCodeExportDialog,
+                        ModuleDialog, ModuleEditorWidget)
 from utils.parser import CCodeParser
-from utils.config import ConfigManager
 
 
 def resource_path(relative_path):
-    """
-    Get absolute path to resource, works for dev and for PyInstaller onefile.
-    """
+    """Get absolute path to resource, works for dev and for PyInstaller."""
     if hasattr(sys, "_MEIPASS"):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.abspath("."), relative_path)
+
 
 class MainWindow(QMainWindow):
     """Main application window."""
@@ -37,7 +35,6 @@ class MainWindow(QMainWindow):
         self.setGeometry(100, 100, 1200, 800)
         
         self.project = Project()
-        self.config_manager = ConfigManager("../config")
         self.current_file = None
         
         self.setup_ui()
@@ -60,141 +57,133 @@ class MainWindow(QMainWindow):
         """Setup the user interface."""
         central_widget = QWidget()
         layout = QVBoxLayout()
-        
+
         # Project name
         name_layout = QHBoxLayout()
         name_layout.addWidget(QLabel("Project:"))
-        self.project_label = QLabel(self.project.name)
-        self.project_label.setStyleSheet("font-weight: bold;")
-        name_layout.addWidget(self.project_label)
+        self.project_name_edit = QLineEdit(self.project.name)
+        self.project_name_edit.setStyleSheet("font-weight: bold;")
+        self.project_name_edit.textChanged.connect(self._on_project_name_changed)
+        name_layout.addWidget(self.project_name_edit)
         name_layout.addStretch()
         layout.addLayout(name_layout)
-        
-        # Tab widget for devices
-        self.device_tabs = QTabWidget()
-        self.device_tabs.setTabsClosable(True)
-        self.device_tabs.tabCloseRequested.connect(self.close_device_tab)
-        layout.addWidget(self.device_tabs)
-        
-        # Add device button
-        add_device_btn = QPushButton("+ Add Device")
-        add_device_btn.clicked.connect(self.add_device)
-        layout.addWidget(add_device_btn)
-        
+
+        # Main stacked area: Devices overview (index 0) and Actions view (index 1)
+        self.main_stack = QStackedWidget()
+
+        # --- Devices overview page ---
+        devices_page = QWidget()
+        devices_layout = QHBoxLayout()
+
+        left_col = QVBoxLayout()
+        left_col.addWidget(QLabel("Modules"))
+        self.modules_list = QListWidget()
+        self.modules_list.itemDoubleClicked.connect(self._on_module_double_clicked)
+        self.modules_list.currentItemChanged.connect(self._on_modules_selection_changed)
+        left_col.addWidget(self.modules_list)
+
+        btn_row = QHBoxLayout()
+        add_btn = QPushButton("Add")
+        add_btn.clicked.connect(self.add_module)
+        btn_row.addWidget(add_btn)
+        edit_btn = QPushButton("Edit")
+        edit_btn.clicked.connect(self.edit_selected_module)
+        btn_row.addWidget(edit_btn)
+        remove_btn = QPushButton("Remove")
+        remove_btn.clicked.connect(self.remove_selected_module)
+        btn_row.addWidget(remove_btn)
+        left_col.addLayout(btn_row)
+
+        devices_layout.addLayout(left_col, 1)
+
+        right_col = QVBoxLayout()
+        # Inline module editor replaces the placeholder label/button
+        self.module_editor = ModuleEditorWidget(None, self.project.modules, self)
+        self.module_editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.module_editor.saved.connect(self._on_module_saved)
+        # Give the editor the vertical stretch so it fills the right column
+        right_col.addWidget(self.module_editor, 1)
+        devices_layout.addLayout(right_col, 2)
+
+        devices_page.setLayout(devices_layout)
+        self.main_stack.addWidget(devices_page)
+
+        # --- Actions page (current main UI) ---
+        actions_page = QWidget()
+        actions_layout = QVBoxLayout()
+
+        self.module_tabs = QTabWidget()
+        self.module_tabs.setTabsClosable(True)
+        self.module_tabs.tabCloseRequested.connect(self.close_module_tab)
+        actions_layout.addWidget(self.module_tabs)
+
+        action_btn_row = QHBoxLayout()
+        import_btn = QPushButton("Import from C")
+        import_btn.clicked.connect(self.import_c_code)
+        action_btn_row.addWidget(import_btn)
+        export_btn = QPushButton("Export to C")
+        export_btn.clicked.connect(self.export_c_code)
+        action_btn_row.addWidget(export_btn)
+        action_btn_row.addStretch()
+        actions_layout.addLayout(action_btn_row)
+
+        actions_page.setLayout(actions_layout)
+        self.main_stack.addWidget(actions_page)
+
+        layout.addWidget(self.main_stack)
         central_widget.setLayout(layout)
         self.setCentralWidget(central_widget)
+
+        # Start on modules overview
+        self.switch_to_modules()
     
+    def _add_action(self, menu, label, slot, shortcut=None):
+        action = QAction(label, self)
+        if shortcut:
+            action.setShortcut(shortcut)
+        action.triggered.connect(slot)
+        menu.addAction(action)
+        return action
+
     def setup_menu(self):
         """Setup menu bar."""
         menubar = self.menuBar()
-        
-        # File menu
+
         file_menu = menubar.addMenu("File")
-        
-        new_action = QAction("New Project", self)
-        new_action.setShortcut("Ctrl+N")
-        new_action.triggered.connect(self.new_project)
-        file_menu.addAction(new_action)
-        
-        open_action = QAction("Open Project...", self)
-        open_action.setShortcut("Ctrl+O")
-        open_action.triggered.connect(self.open_project)
-        file_menu.addAction(open_action)
-        
-        save_action = QAction("Save Project", self)
-        save_action.setShortcut("Ctrl+S")
-        save_action.triggered.connect(self.save_project)
-        file_menu.addAction(save_action)
-        
-        save_as_action = QAction("Save Project As...", self)
-        save_as_action.setShortcut("Ctrl+Shift+S")
-        save_as_action.triggered.connect(self.save_project_as)
-        file_menu.addAction(save_as_action)
-        
+        self._new_action = self._add_action(file_menu, "New Project", self.new_project, "Ctrl+N")
+        self._open_action = self._add_action(file_menu, "Open Project...", self.open_project, "Ctrl+O")
+        self._save_action = self._add_action(file_menu, "Save Project", self.save_project, "Ctrl+S")
+        self._add_action(file_menu, "Save Project As...", self.save_project_as, "Ctrl+Shift+S")
         file_menu.addSeparator()
-        
-        exit_action = QAction("Exit", self)
-        exit_action.setShortcut("Ctrl+Q")
-        exit_action.triggered.connect(self.close)
-        file_menu.addAction(exit_action)
-        
-        # Edit menu
-        edit_menu = menubar.addMenu("Edit")
-        
-        light_points_action = QAction("Edit Light Points...", self)
-        light_points_action.triggered.connect(self.edit_light_points)
-        edit_menu.addAction(light_points_action)
-        
-        validate_action = QAction("Validate Configuration", self)
-        validate_action.triggered.connect(self.validate_project)
-        edit_menu.addAction(validate_action)
-        
-        # Device menu
-        device_menu = menubar.addMenu("Device")
-        
-        add_device_action = QAction("Add Device", self)
-        add_device_action.setShortcut("Ctrl+D")
-        add_device_action.triggered.connect(self.add_device)
-        device_menu.addAction(add_device_action)
-        
-        remove_device_action = QAction("Remove Current Device", self)
-        remove_device_action.triggered.connect(self.remove_current_device)
-        device_menu.addAction(remove_device_action)
-        
-        # Code menu
-        code_menu = menubar.addMenu("Code")
-        
-        import_action = QAction("Import from C Code...", self)
-        import_action.setShortcut("Ctrl+I")
-        import_action.triggered.connect(self.import_c_code)
-        code_menu.addAction(import_action)
-        
-        export_action = QAction("Export to C Code...", self)
-        export_action.setShortcut("Ctrl+E")
-        export_action.triggered.connect(self.export_c_code)
-        code_menu.addAction(export_action)
-        
-        # Help menu
+        self._validate_action = self._add_action(file_menu, "Validate Configuration", self.validate_project)
+        file_menu.addSeparator()
+        self._add_action(file_menu, "Exit", self.close, "Ctrl+Q")
+
         help_menu = menubar.addMenu("Help")
-        
-        about_action = QAction("About", self)
-        about_action.triggered.connect(self.show_about)
-        help_menu.addAction(about_action)
+        self._add_action(help_menu, "About", self.show_about)
     
     def setup_toolbar(self):
-        """Setup toolbar."""
-        toolbar = QToolBar()
-        toolbar.setMovable(False)
+        toolbar = QToolBar("Main Toolbar")
         self.addToolBar(toolbar)
-        
-        # Add common actions
-        new_btn = QPushButton("New")
-        new_btn.clicked.connect(self.new_project)
-        toolbar.addWidget(new_btn)
-        
-        open_btn = QPushButton("Open")
-        open_btn.clicked.connect(self.open_project)
-        toolbar.addWidget(open_btn)
-        
-        save_btn = QPushButton("Save")
-        save_btn.clicked.connect(self.save_project)
-        toolbar.addWidget(save_btn)
-        
+
+    
+        modules_action = QAction("Modules", self)
+        modules_action.setCheckable(True)
+        modules_action.triggered.connect(self.switch_to_modules)
+        toolbar.addAction(modules_action)
+        # Default to Modules view selected on startup
+        modules_action.setChecked(True)
+        self._modules_toolbar_action = modules_action
+
+        actions_action = QAction("Actions", self)
+        actions_action.setCheckable(True)
+        actions_action.triggered.connect(self.switch_to_actions)
+        toolbar.addAction(actions_action)
+        self._actions_toolbar_action = actions_action
+
         toolbar.addSeparator()
-        
-        import_btn = QPushButton("Import C")
-        import_btn.clicked.connect(self.import_c_code)
-        toolbar.addWidget(import_btn)
-        
-        export_btn = QPushButton("Export C")
-        export_btn.clicked.connect(self.export_c_code)
-        toolbar.addWidget(export_btn)
-        
-        toolbar.addSeparator()
-        
-        validate_btn = QPushButton("Validate")
-        validate_btn.clicked.connect(self.validate_project)
-        toolbar.addWidget(validate_btn)
+
+        # '+ Module' toolbar action removed per UI simplification
     
     def setup_statusbar(self):
         """Setup status bar."""
@@ -215,12 +204,206 @@ class MainWindow(QMainWindow):
         
         self.project = Project("New Project")
         self.current_file = None
-        self.project_label.setText(self.project.name)
+        self.project_name_edit.setText(self.project.name)
         
-        # Clear all device tabs
-        self.device_tabs.clear()
+        # Clear all module tabs
+        self.module_tabs.clear()
+        self.refresh_module_list()
+        if hasattr(self, 'module_editor'):
+            self.module_editor.set_module(None)
         
         self.statusBar().showMessage("New project created")
+
+    # --- Devices / Actions view helpers ---------------------------------
+    def switch_to_modules(self):
+        """Show the modules overview page."""
+        try:
+            self.main_stack.setCurrentIndex(0)
+        except Exception:
+            pass
+        # Reflect toolbar state
+        try:
+            if hasattr(self, '_modules_toolbar_action'):
+                self._modules_toolbar_action.setChecked(True)
+            if hasattr(self, '_actions_toolbar_action'):
+                self._actions_toolbar_action.setChecked(False)
+        except Exception:
+            pass
+        self.refresh_module_list()
+        # Select first module if present and populate inline editor
+        try:
+            if self.modules_list.count() > 0:
+                self.modules_list.setCurrentRow(0)
+            else:
+                if hasattr(self, 'module_editor'):
+                    self.module_editor.set_module(None)
+        except Exception:
+            pass
+
+    def switch_to_actions(self):
+        """Show the actions (device tabs) page."""
+        try:
+            self.main_stack.setCurrentIndex(1)
+        except Exception:
+            pass
+        # Reflect toolbar state
+        try:
+            if hasattr(self, '_modules_toolbar_action'):
+                self._modules_toolbar_action.setChecked(False)
+            if hasattr(self, '_actions_toolbar_action'):
+                self._actions_toolbar_action.setChecked(True)
+        except Exception:
+            pass
+
+    def refresh_module_list(self):
+        """Refresh the modules list widget from project data."""
+        try:
+            self.modules_list.clear()
+            for m in self.project.modules:
+                self.modules_list.addItem(m.name)
+            # Keep inline editor's module list reference up-to-date
+            try:
+                if hasattr(self, 'module_editor'):
+                    self.module_editor.all_modules = list(self.project.modules)
+                    # If nothing is selected, default to the first module
+                    if self.modules_list.count() > 0 and self.modules_list.currentRow() < 0:
+                        self.modules_list.setCurrentRow(0)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _on_module_double_clicked(self, item):
+        self.open_actions_for_selected()
+
+    def _on_modules_selection_changed(self, current, previous):
+        """Handle selection change in modules list."""
+        if not current:
+            if hasattr(self, 'module_editor'):
+                self.module_editor.set_module(None)
+            return
+
+        name = current.text()
+        module = next((m for m in self.project.modules if m.name == name), None)
+        if hasattr(self, 'module_editor'):
+            self.module_editor.set_module(module)
+
+    def _on_module_saved(self, module):
+        """Handler called when inline editor emits saved signal."""
+        try:
+            # Update any open module tab for this module
+            for i in range(self.module_tabs.count()):
+                tab_widget = self.module_tabs.widget(i)
+                if getattr(tab_widget, 'module', None) is module:
+                    self.module_tabs.setTabText(i, module.name)
+                    try:
+                        tab_widget.name_edit.blockSignals(True)
+                        tab_widget.name_edit.setText(module.name)
+                        tab_widget.name_edit.blockSignals(False)
+                        tab_widget.update_outputs(module.outputs)
+                    except Exception:
+                        pass
+                    break
+            # Refresh list and mark project modified
+            self.refresh_module_list()
+            self.on_module_modified()
+            self.statusBar().showMessage(f"Saved module: {module.name}")
+        except Exception:
+            pass
+
+    def open_actions_for_selected(self):
+        """Open the actions view for the currently selected module in the list."""
+        item = self.modules_list.currentItem()
+        if not item:
+            QMessageBox.information(self, "No Module", "No module selected.")
+            return
+        name = item.text()
+        module = next((m for m in self.project.modules if m.name == name), None)
+        if not module:
+            QMessageBox.warning(self, "Not Found", "Selected module not found in project.")
+            return
+
+        idx = self.find_module_tab_index(module)
+        if idx == -1:
+            if module.num_inputs > 0:
+                self.add_module_tab(module)
+                idx = self.find_module_tab_index(module)
+            else:
+                QMessageBox.information(self, "No Actions", "Selected module has no inputs/actions to edit.")
+                return
+
+        self.switch_to_actions()
+        if idx != -1:
+            self.module_tabs.setCurrentIndex(idx)
+
+    def find_module_tab_index(self, module):
+        for i in range(self.module_tabs.count()):
+            widget = self.module_tabs.widget(i)
+            if hasattr(widget, 'module') and widget.module is module:
+                return i
+        return -1
+
+    def edit_selected_module(self):
+        item = self.modules_list.currentItem()
+        if not item:
+            QMessageBox.information(self, "No Module", "No module selected.")
+            return
+        module = next((m for m in self.project.modules if m.name == item.text()), None)
+        if not module:
+            QMessageBox.warning(self, "Not Found", "Module not found.")
+            return
+        dialog = ModuleDialog(module=module, parent=self)
+        if dialog.exec_() == QDialog.Accepted:
+            config = dialog.get_module_config()
+            old_inputs = module.num_inputs
+            old_extras = module.num_extra_actions
+            module.update_from_dict(config)
+
+            # Update action tab if open
+            for i in range(self.module_tabs.count()):
+                tab_widget = self.module_tabs.widget(i)
+                if tab_widget.module is module:
+                    self.module_tabs.setTabText(i, module.name)
+                    tab_widget.name_edit.blockSignals(True)
+                    tab_widget.name_edit.setText(module.name)
+                    tab_widget.name_edit.blockSignals(False)
+                    if module.num_inputs != old_inputs or module.num_extra_actions != old_extras:
+                        tab_widget.rebuild_ui()
+                    else:
+                        tab_widget.update_outputs(module.outputs)
+                    break
+
+            # Update inline editor
+            if hasattr(self, 'module_editor'):
+                self.module_editor.set_module(module)
+
+            self.on_module_modified()
+            self.refresh_module_list()
+            self.statusBar().showMessage(f"Updated module: {module.name}")
+
+    def remove_selected_module(self):
+        item = self.modules_list.currentItem()
+        if not item:
+            QMessageBox.information(self, "No Module", "No module selected.")
+            return
+        module = next((m for m in self.project.modules if m.name == item.text()), None)
+        if not module:
+            QMessageBox.warning(self, "Not Found", "Module not found.")
+            return
+        reply = QMessageBox.question(self, "Remove Module",
+                                     f"Are you sure you want to remove module '{module.name}'?",
+                                     QMessageBox.Yes | QMessageBox.No)
+        if reply == QMessageBox.Yes:
+            idx = self.find_module_tab_index(module)
+            if idx != -1:
+                self.module_tabs.removeTab(idx)
+            try:
+                self.project.modules.remove(module)
+            except ValueError:
+                pass
+            self.project.modified = True
+            self.refresh_module_list()
+            self.statusBar().showMessage(f"Removed module: {module.name}")
     
     def open_project(self):
         """Open an existing project."""
@@ -231,12 +414,15 @@ class MainWindow(QMainWindow):
             try:
                 self.project = Project.load_from_file(filepath)
                 self.current_file = filepath
-                self.project_label.setText(self.project.name)
+                self.project_name_edit.setText(self.project.name)
                 
-                # Clear and reload device tabs
-                self.device_tabs.clear()
-                for device in self.project.devices:
-                    self.add_device_tab(device)
+                # Clear and reload module tabs (only modules with inputs)
+                self.module_tabs.clear()
+                for module in self.project.modules:
+                    if module.num_inputs > 0:
+                        self.add_module_tab(module)
+                # Refresh list view
+                self.refresh_module_list()
                 
                 self.statusBar().showMessage(f"Opened: {filepath}")
             except Exception as e:
@@ -247,6 +433,7 @@ class MainWindow(QMainWindow):
         if self.current_file:
             try:
                 self.project.save_to_file(self.current_file)
+                self._mark_saved()
                 self.statusBar().showMessage(f"Saved: {self.current_file}")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save project: {e}")
@@ -255,72 +442,83 @@ class MainWindow(QMainWindow):
     
     def save_project_as(self):
         """Save the project to a new file."""
+        suggested = self.project.name.replace(" ", "_") + ".json" if self.project.name else ""
         filepath, _ = QFileDialog.getSaveFileName(
-            self, "Save Project As", "", "JSON Files (*.json);;All Files (*)"
+            self, "Save Project As", suggested, "JSON Files (*.json);;All Files (*)"
         )
         if filepath:
             try:
                 self.project.save_to_file(filepath)
                 self.current_file = filepath
+                self._mark_saved()
                 self.statusBar().showMessage(f"Saved: {filepath}")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to save project: {e}")
     
-    def add_device(self):
-        """Add a new device to the project."""
-        dialog = NewDeviceDialog(self)
+    def add_module(self):
+        """Add a new module to the project."""
+        dialog = ModuleDialog(parent=self)
         if dialog.exec_() == QDialog.Accepted:
-            config = dialog.get_device_config()
-            device = Device(
+            config = dialog.get_module_config()
+            module = Module(
                 name=config["name"],
                 num_inputs=config["num_inputs"],
-                num_extra_actions=config["num_extra_actions"]
+                num_extra_actions=config["num_extra_actions"],
+                num_outputs=config.get("num_outputs", 0),
+                node=config.get("node", 0),
             )
-            self.project.add_device(device)
-            self.add_device_tab(device)
-            self.statusBar().showMessage(f"Added device: {device.name}")
+            self.project.add_module(module)
+            if module.num_inputs > 0:
+                self.add_module_tab(module)
+            # Keep module list in sync and select the new module
+            self.refresh_module_list()
+            for i in range(self.modules_list.count()):
+                if self.modules_list.item(i).text() == module.name:
+                    self.modules_list.setCurrentRow(i)
+                    break
+            self.statusBar().showMessage(f"Added module: {module.name}")
     
-    def add_device_tab(self, device):
-        """Add a device tab to the UI."""
-        widget = DeviceWidget(device, self.project.light_points)
-        widget.device_modified.connect(self.on_device_modified)
-        self.device_tabs.addTab(widget, device.name)
-        self.device_tabs.setCurrentWidget(widget)
+    def add_module_tab(self, module):
+        """Add a module tab to the UI."""
+        widget = ModuleWidget(module)
+        widget.module_modified.connect(self.on_module_modified)
+        self.module_tabs.addTab(widget, module.name)
+        self.module_tabs.setCurrentWidget(widget)
+        # Keep the modules list up to date
+        try:
+            self.refresh_module_list()
+        except Exception:
+            pass
     
-    def close_device_tab(self, index):
-        """Close a device tab."""
-        widget = self.device_tabs.widget(index)
-        device_name = widget.device.name
-        
+    def close_module_tab(self, index):
+        """Close a module tab."""
+        widget = self.module_tabs.widget(index)
+        module = widget.module
+
         reply = QMessageBox.question(
-            self, "Remove Device",
-            f"Are you sure you want to remove device '{device_name}'?",
+            self, "Remove Module",
+            f"Are you sure you want to remove module '{module.name}'?",
             QMessageBox.Yes | QMessageBox.No
         )
-        
+
         if reply == QMessageBox.Yes:
-            self.project.remove_device(device_name)
-            self.device_tabs.removeTab(index)
-            self.statusBar().showMessage(f"Removed device: {device_name}")
+            try:
+                self.project.modules.remove(module)
+            except ValueError:
+                pass
+            self.project.modified = True
+            self.module_tabs.removeTab(index)
+            try:
+                self.refresh_module_list()
+            except Exception:
+                pass
+            self.statusBar().showMessage(f"Removed module: {module.name}")
     
-    def remove_current_device(self):
-        """Remove the currently selected device."""
-        current_index = self.device_tabs.currentIndex()
+    def remove_current_module(self):
+        """Remove the currently selected module."""
+        current_index = self.module_tabs.currentIndex()
         if current_index >= 0:
-            self.close_device_tab(current_index)
-    
-    def edit_light_points(self):
-        """Edit light points configuration."""
-        dialog = LightPointsEditorDialog(self.project.light_points, self)
-        if dialog.exec_() == QDialog.Accepted:
-            self.project.set_light_points(dialog.get_light_points())
-            
-            # Update all device widgets
-            for i in range(self.device_tabs.count()):
-                widget = self.device_tabs.widget(i)
-                widget.update_light_points(self.project.light_points)
-            
-            self.statusBar().showMessage("Light points updated")
+            self.close_module_tab(current_index)
     
     def validate_project(self):
         """Validate the project configuration."""
@@ -344,10 +542,12 @@ class MainWindow(QMainWindow):
             c_code = dialog.get_c_code()
             
             try:
-                device = CCodeParser.parse_to_device(c_code, "Imported Device")
-                self.project.add_device(device)
-                self.add_device_tab(device)
-                self.statusBar().showMessage(f"Imported device: {device.name}")
+                module = CCodeParser.parse_to_module(c_code, "Imported Module")
+                self.project.add_module(module)
+                if module.num_inputs > 0:
+                    self.add_module_tab(module)
+                self.refresh_module_list()
+                self.statusBar().showMessage(f"Imported module: {module.name}")
             except Exception as e:
                 QMessageBox.critical(self, "Import Error", f"Failed to import: {e}")
     
@@ -357,8 +557,17 @@ class MainWindow(QMainWindow):
         dialog = CCodeExportDialog(c_code, self)
         dialog.exec_()
     
-    def on_device_modified(self):
-        """Handle device modification."""
+    def _mark_saved(self):
+        title = self.windowTitle()
+        if title.endswith("*"):
+            self.setWindowTitle(title[:-1])
+
+    def _on_project_name_changed(self, text):
+        self.project.name = text
+        self.on_module_modified()
+
+    def on_module_modified(self):
+        """Handle module modification."""
         self.project.modified = True
         if not self.windowTitle().endswith("*"):
             self.setWindowTitle(self.windowTitle() + "*")

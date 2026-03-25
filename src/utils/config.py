@@ -2,8 +2,6 @@
 Configuration file handler for light points and settings.
 """
 
-import json
-import os
 
 class ConfigManager:
     """Manage configuration files for light points and settings."""
@@ -33,82 +31,6 @@ class ConfigManager:
     
     def __init__(self, config_dir="config"):
         self.config_dir = config_dir
-        self.ensure_config_dir()
-    
-    def ensure_config_dir(self):
-        """Create config directory if it doesn't exist."""
-        if not os.path.exists(self.config_dir):
-            os.makedirs(self.config_dir)
-    
-    def get_default_config_path(self):
-        """Get path to default config file."""
-        return os.path.join(self.config_dir, "default_config.json")
-    
-    def load_light_points(self, filepath=None):
-        """Load light points from config file.
-        
-        Args:
-            filepath: Path to config file (uses default if None)
-            
-        Returns:
-            Dictionary of light points
-        """
-        if filepath is None:
-            filepath = self.get_default_config_path()
-        
-        try:
-            with open(filepath, 'r') as f:
-                data = json.load(f)
-                return data.get("light_points", self.DEFAULT_LIGHT_POINTS)
-        except FileNotFoundError:
-            # Return default if file doesn't exist
-            return self.DEFAULT_LIGHT_POINTS.copy()
-        except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON in config file: {e}")
-    
-    def save_light_points(self, light_points, filepath=None):
-        """Save light points to config file.
-        
-        Args:
-            light_points: Dictionary of light points
-            filepath: Path to config file (uses default if None)
-        """
-        if filepath is None:
-            filepath = self.get_default_config_path()
-        
-        data = {"light_points": light_points}
-        
-        with open(filepath, 'w') as f:
-            json.dump(data, f, indent=2)
-    
-    def validate_light_points(self, light_points):
-        """Validate light points configuration.
-        
-        Returns:
-            List of error messages (empty if valid)
-        """
-        errors = []
-        
-        if not isinstance(light_points, dict):
-            errors.append("Light points must be a dictionary")
-            return errors
-        
-        for name, value in light_points.items():
-            if not isinstance(name, str):
-                errors.append(f"Light point name must be string: {name}")
-            
-            if not isinstance(value, (list, tuple)) or len(value) != 2:
-                errors.append(f"Light point '{name}' must have [node, output] format")
-                continue
-            
-            node, output = value
-            if not isinstance(node, int) or not isinstance(output, int):
-                errors.append(f"Light point '{name}' node and output must be integers")
-            
-            if node < 0 or output < 0:
-                errors.append(f"Light point '{name}' node and output must be non-negative")
-        
-        return errors
     
     def import_light_points_from_c(self, c_code):
         """Extract light points definitions from C code.

@@ -4,7 +4,7 @@ C code parser for EventAction declarations.
 
 import re
 from models.event_action import EventAction
-from models.device import Device
+from models.module import Module
 
 class CCodeParser:
     """Parse C code containing EventAction declarations."""
@@ -44,15 +44,15 @@ class CCodeParser:
         return actions
     
     @staticmethod
-    def parse_to_device(c_code, device_name="Imported Device"):
-        """Parse C code and create a Device object.
+    def parse_to_module(c_code, module_name="Imported Module"):
+        """Parse C code and create a Module object.
         
         Args:
             c_code: String containing C code
-            device_name: Name for the created device
+            module_name: Name for the created module
             
         Returns:
-            Device object populated with parsed actions
+            Module object populated with parsed actions
         """
         actions = CCodeParser.parse_c_code(c_code)
         
@@ -78,18 +78,26 @@ class CCodeParser:
                 except ValueError:
                     pass
         
-        # Create device with appropriate sizes
-        device = Device(
-            name=device_name,
+        # Create module with appropriate sizes
+        module = Module(
+            name=module_name,
             num_inputs=max(max_input, 4),
             num_extra_actions=max(max_extra, 20)
         )
         
-        # Populate device with parsed actions
+        # Populate module with parsed actions
         for name, action in actions.items():
-            device.set_action(name, action)
+            module.set_action(name, action)
         
-        return device
+        # Infer module id from parsed actions (most common node)
+        try:
+            from collections import Counter
+            nodes = [a.node for a in actions.values() if getattr(a, 'node', 0)]
+            if nodes:
+                module.id = int(Counter(nodes).most_common(1)[0][0])
+        except Exception:
+            pass
+        return module
     
     @staticmethod
     def validate_c_code(c_code):

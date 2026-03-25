@@ -81,22 +81,22 @@ class TestCCodeParser(unittest.TestCase):
         
         self.assertGreater(len(errors), 0)
     
-    def test_parse_to_device(self):
-        """Test parsing C code to Device object."""
+    def test_parse_to_module(self):
+        """Test parsing C code to Module object."""
         c_code = """
         EventAction input1_singlePress = { on, off, 5000, 100, 64, 0, 0, 1 };
         EventAction input2_doublePress = { toggle, nop, 0, 100, 64, 1, 0, 0 };
         EventAction extraAction1 = { off, on, 3000, 80, 65, 2, 0, 0 };
         """
-        device = CCodeParser.parse_to_device(c_code, "Test Device")
+        module = CCodeParser.parse_to_module(c_code, "Test Module")
         
-        self.assertEqual(device.name, "Test Device")
-        self.assertGreaterEqual(device.num_inputs, 2)
-        self.assertGreaterEqual(device.num_extra_actions, 1)
+        self.assertEqual(module.name, "Test Module")
+        self.assertGreaterEqual(module.num_inputs, 2)
+        self.assertGreaterEqual(module.num_extra_actions, 1)
         
         # Check that actions were populated
-        self.assertEqual(device.input_actions["input1_singlePress"].action, "on")
-        self.assertEqual(device.extra_actions["extraAction1"].action, "off")
+        self.assertEqual(module.input_actions["input1_singlePress"].action, "on")
+        self.assertEqual(module.extra_actions["extraAction1"].action, "off")
 
 class TestEventAction(unittest.TestCase):
     """Test EventAction model."""
@@ -118,20 +118,6 @@ class TestEventAction(unittest.TestCase):
         expected = "EventAction input1_singlePress = { on, off, 5000, 100, 64, 0, 0, 1 };"
         
         self.assertEqual(c_code, expected)
-    
-    def test_resolve_composite_action(self):
-        """Test resolving composite actions."""
-        action = EventAction("test", action="ondelayoff")
-        resolved_action, resolved_delay = action.resolve_composite_action()
-        
-        self.assertEqual(resolved_action, "on")
-        self.assertEqual(resolved_delay, "off")
-        
-        action2 = EventAction("test2", action="offdelayon")
-        resolved_action2, resolved_delay2 = action2.resolve_composite_action()
-        
-        self.assertEqual(resolved_action2, "off")
-        self.assertEqual(resolved_delay2, "on")
     
     def test_is_empty(self):
         """Test empty action detection."""

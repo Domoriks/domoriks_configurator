@@ -5,8 +5,159 @@ Dialog windows for various configuration tasks.
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTextEdit,
                              QPushButton, QLabel, QMessageBox, QFileDialog,
                              QLineEdit, QSpinBox, QFormLayout, QTableWidget,
-                             QTableWidgetItem, QHeaderView, QAbstractItemView)
-from PyQt5.QtCore import Qt
+                             QTableWidgetItem, QHeaderView, QAbstractItemView,
+                             QWidget, QListWidget, QSizePolicy)
+from PyQt5.QtCore import Qt, pyqtSignal
+
+
+class ModuleEditorWidget(QWidget):
+    """Widget for editing a single module (right-side editor).
+
+    Changes apply immediately to the module model.
+    """
+
+    saved = pyqtSignal(object)
+
+    def __init__(self, module=None, all_modules=None, parent=None):
+        super().__init__(parent)
+        self.module = module
+        self.all_modules = list(all_modules) if all_modules else []
+        self._updating = False
+        self.setup_ui()
+
+    def setup_ui(self):
+        root = QVBoxLayout()
+
+        form = QFormLayout()
+        self.name_edit = QLineEdit(self.module.name if self.module else "")
+        self.name_edit.textChanged.connect(self._apply_changes)
+        form.addRow("Module Name:", self.name_edit)
+
+        self.node_spin = QSpinBox()
+        self.node_spin.setRange(0, 65535)
+        self.node_spin.setValue(getattr(self.module, 'node', 0) or 0)
+        self.node_spin.valueChanged.connect(self._apply_changes)
+        form.addRow("Node:", self.node_spin)
+        root.addLayout(form)
+
+        root.addWidget(QLabel("Inputs:"))
+        self.inputs_table = QTableWidget()
+        self.inputs_table.setColumnCount(1)
+        self.inputs_table.setHorizontalHeaderLabels(["Input Channel"])
+        self.inputs_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.inputs_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._populate_inputs()
+        self.inputs_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        root.addWidget(self.inputs_table)
+
+        root.addWidget(QLabel("Outputs:"))
+        self.table = QTableWidget()
+        self.table.setColumnCount(2)
+        self.table.setHorizontalHeaderLabels(["Name", "Channel"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.setSortingEnabled(False)
+        self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.table.itemChanged.connect(self._on_table_item_changed)
+        self.populate_table()
+        root.addWidget(self.table, 1)
+
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setLayout(root)
+
+    def _populate_inputs(self):
+        num = self.module.num_inputs if self.module else 0
+        self.inputs_table.setRowCount(num)
+        for i in range(num):
+            self.inputs_table.setItem(i, 0, QTableWidgetItem(f"Input {i + 1}"))
+
+    def populate_table(self):
+        self._updating = True
+        outputs = self.module.outputs if self.module else {}
+        self.table.setRowCount(len(outputs))
+
+        def _safe_int(v, fallback=float('inf')):
+            try:
+                return int(v)
+            except Exception:
+                return fallback
+
+        def _channel(value):
+            if isinstance(value, (list, tuple)) and len(value) >= 2:
+                return value[1]
+            return value
+
+        items = list(outputs.items())
+        try:
+            items.sort(key=lambda kv: _safe_int(_channel(kv[1])))
+        except Exception:
+            items.sort(key=lambda kv: kv[0].lower())
+
+        for row, (name, value) in enumerate(items):
+            channel = _channel(value)
+            name_item = QTableWidgetItem(name)
+            channel_item = QTableWidgetItem(str(channel))
+            try:
+                channel_item.setData(Qt.EditRole, int(channel))
+            except Exception:
+                pass
+            self.table.setItem(row, 0, name_item)
+            self.table.setItem(row, 1, channel_item)
+        self._updating = False
+
+    def _on_table_item_changed(self, item):
+        if not self._updating:
+            self._apply_changes()
+
+    def _apply_changes(self):
+        if self._updating or not self.module:
+            return
+        self.module.name = self.name_edit.text()
+        self.module.node = int(self.node_spin.value())
+        outputs = self._get_outputs_from_table(silent=True)
+        if outputs is not None:
+            self.module.outputs = outputs
+            self.module.num_outputs = len(outputs)
+        self.saved.emit(self.module)
+
+    def _get_outputs_from_table(self, silent=False):
+        outputs = {}
+        node = self.node_spin.value()
+        channels_seen = set()
+        for row in range(self.table.rowCount()):
+            try:
+                name = self.table.item(row, 0).text()
+                channel = int(self.table.item(row, 1).text())
+                if not name:
+                    if not silent:
+                        QMessageBox.warning(self, "Invalid Data", f"Row {row + 1}: Name cannot be empty.")
+                    return None
+                if channel in channels_seen:
+                    if not silent:
+                        QMessageBox.warning(
+                            self, "Duplicate Channel",
+                            f"Row {row + 1}: Channel {channel} is already used by another output.\n"
+                            f"Each output must have a unique channel number."
+                        )
+                    return None
+                channels_seen.add(channel)
+                outputs[name] = [node, channel]
+            except (ValueError, AttributeError):
+                if not silent:
+                    QMessageBox.warning(
+                        self, "Invalid Data",
+                        f"Row {row + 1}: Ensure all fields are valid (integer for Channel)."
+                    )
+                return None
+        return outputs
+
+    def set_module(self, module):
+        self._updating = True
+        self.module = module
+        self.name_edit.setText(module.name if module else "")
+        self.node_spin.setValue(getattr(module, 'node', 0) or 0)
+        self._populate_inputs()
+        self.populate_table()
+        self._updating = False
 
 class CCodeImportDialog(QDialog):
     """Dialog for importing C code."""
@@ -156,40 +307,48 @@ class CCodeExportDialog(QDialog):
                 QMessageBox.critical(self, "Error", f"Failed to save file: {e}")
 
 
-class NewDeviceDialog(QDialog):
-    """Dialog for creating a new device."""
+class ModuleDialog(QDialog):
+    """Dialog for creating or editing a module."""
     
-    def __init__(self, parent=None):
+    def __init__(self, module=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("New Device")
+        self._module = module
+        self._editing = module is not None
+        self.setWindowTitle("Edit Module" if self._editing else "New Module")
         self.setMinimumWidth(300)
         self.setup_ui()
     
     def setup_ui(self):
         layout = QFormLayout()
         
-        # Device name
-        self.name_edit = QLineEdit("New Device")
-        layout.addRow("Device Name:", self.name_edit)
+        self.name_edit = QLineEdit(self._module.name if self._module else "New Module")
+        layout.addRow("Module Name:", self.name_edit)
         
-        # Number of inputs
         self.inputs_spin = QSpinBox()
-        self.inputs_spin.setRange(1, 16)
-        self.inputs_spin.setValue(4)
+        self.inputs_spin.setRange(0, 16)
+        self.inputs_spin.setValue(self._module.num_inputs if self._module else 4)
         layout.addRow("Number of Inputs:", self.inputs_spin)
         
-        # Number of extra actions
         self.extras_spin = QSpinBox()
         self.extras_spin.setRange(0, 50)
-        self.extras_spin.setValue(20)
+        self.extras_spin.setValue(self._module.num_extra_actions if self._module else 20)
         layout.addRow("Extra Actions:", self.extras_spin)
+
+        self.outputs_spin = QSpinBox()
+        self.outputs_spin.setRange(0, 16)
+        self.outputs_spin.setValue(self._module.num_outputs if self._module else 0)
+        layout.addRow("Number of Outputs:", self.outputs_spin)
         
-        # Buttons
+        self.node_spin = QSpinBox()
+        self.node_spin.setRange(0, 65535)
+        self.node_spin.setValue(self._module.node if self._module else 64)
+        layout.addRow("Node:", self.node_spin)
+        
         button_layout = QHBoxLayout()
         
-        create_btn = QPushButton("Create")
-        create_btn.clicked.connect(self.accept)
-        button_layout.addWidget(create_btn)
+        ok_btn = QPushButton("Save" if self._editing else "Create")
+        ok_btn.clicked.connect(self.accept)
+        button_layout.addWidget(ok_btn)
         
         cancel_btn = QPushButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
@@ -198,185 +357,12 @@ class NewDeviceDialog(QDialog):
         layout.addRow(button_layout)
         self.setLayout(layout)
     
-    def get_device_config(self):
-        """Get the device configuration."""
+    def get_module_config(self):
+        """Get the module configuration."""
         return {
             "name": self.name_edit.text(),
             "num_inputs": self.inputs_spin.value(),
-            "num_extra_actions": self.extras_spin.value()
+            "num_extra_actions": self.extras_spin.value(),
+            "num_outputs": self.outputs_spin.value(),
+            "node": self.node_spin.value()
         }
-
-
-class LightPointsEditorDialog(QDialog):
-    """Dialog for editing light points configuration."""
-    
-    def __init__(self, light_points, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Edit Light Points")
-        self.setMinimumSize(600, 400)
-        self.light_points = light_points.copy()
-        self.setup_ui()
-    
-    def setup_ui(self):
-        layout = QVBoxLayout()
-        
-        # Instructions
-        label = QLabel("Edit light point configurations:")
-        layout.addWidget(label)
-        
-        # Table
-        self.table = QTableWidget()
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["Name", "Node", "Output"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        
-        self.populate_table()
-        
-        layout.addWidget(self.table)
-        
-        # Buttons
-        button_layout = QHBoxLayout()
-        
-        add_btn = QPushButton("Add")
-        add_btn.clicked.connect(self.add_light_point)
-        button_layout.addWidget(add_btn)
-        
-        remove_btn = QPushButton("Remove Selected")
-        remove_btn.clicked.connect(self.remove_selected)
-        button_layout.addWidget(remove_btn)
-        
-        button_layout.addStretch()
-        
-        import_btn = QPushButton("Import from C...")
-        import_btn.clicked.connect(self.import_from_c)
-        button_layout.addWidget(import_btn)
-
-        export_btn = QPushButton("Export to C...")
-        export_btn.clicked.connect(self.export_to_c)
-        button_layout.addWidget(export_btn)
-        
-        save_btn = QPushButton("Save")
-        save_btn.clicked.connect(self.save_changes)
-        button_layout.addWidget(save_btn)
-        
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)
-        button_layout.addWidget(cancel_btn)
-        
-        layout.addLayout(button_layout)
-        self.setLayout(layout)
-    
-    def populate_table(self):
-        """Populate table with light points."""
-        self.table.setRowCount(len(self.light_points))
-        
-        for row, (name, (node, output)) in enumerate(sorted(self.light_points.items())):
-            self.table.setItem(row, 0, QTableWidgetItem(name))
-            self.table.setItem(row, 1, QTableWidgetItem(str(node)))
-            self.table.setItem(row, 2, QTableWidgetItem(str(output)))
-    
-    def add_light_point(self):
-        """Add a new light point."""
-        row = self.table.rowCount()
-        self.table.insertRow(row)
-        self.table.setItem(row, 0, QTableWidgetItem(f"new_light_{row}"))
-        self.table.setItem(row, 1, QTableWidgetItem("64"))
-        self.table.setItem(row, 2, QTableWidgetItem("0"))
-    
-    def remove_selected(self):
-        """Remove selected light points."""
-        selected = self.table.selectedIndexes()
-        if selected:
-            rows = sorted(set(index.row() for index in selected), reverse=True)
-            for row in rows:
-                self.table.removeRow(row)
-    
-    def import_from_c(self):
-        """Import light points from C code."""
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Import Light Points from C")
-        layout = QVBoxLayout()
-        
-        label = QLabel("Paste C code with light point definitions:")
-        layout.addWidget(label)
-        
-        text_edit = QTextEdit()
-        layout.addWidget(text_edit)
-        
-        button_layout = QHBoxLayout()
-        import_btn = QPushButton("Import")
-        cancel_btn = QPushButton("Cancel")
-        button_layout.addWidget(import_btn)
-        button_layout.addWidget(cancel_btn)
-        layout.addLayout(button_layout)
-        
-        dialog.setLayout(layout)
-        
-        def do_import():
-            from utils.config import ConfigManager
-            config_mgr = ConfigManager()
-            imported = config_mgr.import_light_points_from_c(text_edit.toPlainText())
-            if imported:
-                self.light_points.update(imported)
-                self.populate_table()
-                dialog.accept()
-                QMessageBox.information(
-                    self, "Success",
-                    f"Imported {len(imported)} light points"
-                )
-            else:
-                QMessageBox.warning(
-                    self, "No Data",
-                    "No light point definitions found in C code"
-                )
-        
-        import_btn.clicked.connect(do_import)
-        cancel_btn.clicked.connect(dialog.reject)
-        
-        dialog.exec_()
-    
-    def _get_light_points_from_table(self):
-        """Parse the table and return light points dictionary, or None on error."""
-        light_points = {}
-        for row in range(self.table.rowCount()):
-            try:
-                name = self.table.item(row, 0).text()
-                node = int(self.table.item(row, 1).text())
-                output = int(self.table.item(row, 2).text())
-
-                if not name:
-                    QMessageBox.warning(self, "Invalid Data", f"Row {row + 1}: Name cannot be empty.")
-                    return None
-
-                light_points[name] = [node, output]
-            except (ValueError, AttributeError):
-                QMessageBox.warning(
-                    self, "Invalid Data",
-                    f"Row {row + 1}: Ensure all fields are valid (integers for Node/Output)."
-                )
-                return None
-        return light_points
-
-    def export_to_c(self):
-        """Export current light points to C code."""
-        light_points = self._get_light_points_from_table()
-        if light_points is None:
-            return  # Error message shown in helper
-
-        from utils.config import ConfigManager
-        config_mgr = ConfigManager()
-        c_code = config_mgr.export_light_points_to_c(light_points)
-
-        dialog = CCodeExportDialog(c_code, self)
-        dialog.exec_()
-
-    def save_changes(self):
-        """Save changes to light points."""
-        new_light_points = self._get_light_points_from_table()
-        if new_light_points is not None:
-            self.light_points = new_light_points
-            self.accept()
-    
-    def get_light_points(self):
-        """Get the edited light points."""
-        return self.light_points
