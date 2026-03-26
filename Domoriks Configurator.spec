@@ -2,15 +2,15 @@
 
 
 a = Analysis(
-    ['src\\main.py'],
+    ['src/main.py'],
     pathex=[],
-    binaries=[],
+    binaries=[('/mnt/c/Users/Jorik/LocalProjects/901-PersonalGit/domoriks_keep_old/app/.venv/lib/python3.12/site-packages/PyQt5/Qt5/plugins/platforms/libqxcb.so', 'PyQt5/Qt5/plugins/platforms/'), ('/mnt/c/Users/Jorik/LocalProjects/901-PersonalGit/domoriks_keep_old/app/.venv/lib/python3.12/site-packages/PyQt5/Qt5/plugins/platforms/libqwayland-generic.so', 'PyQt5/Qt5/plugins/platforms/'), ('/mnt/c/Users/Jorik/LocalProjects/901-PersonalGit/domoriks_keep_old/app/.venv/lib/python3.12/site-packages/PyQt5/Qt5/plugins/platforms/libqwayland-egl.so', 'PyQt5/Qt5/plugins/platforms/'), ('/mnt/c/Users/Jorik/LocalProjects/901-PersonalGit/domoriks_keep_old/app/.venv/lib/python3.12/site-packages/PyQt5/Qt5/plugins/platforms/libqwayland-xcomposite-egl.so', 'PyQt5/Qt5/plugins/platforms/'), ('/mnt/c/Users/Jorik/LocalProjects/901-PersonalGit/domoriks_keep_old/app/.venv/lib/python3.12/site-packages/PyQt5/Qt5/plugins/platforms/libqwayland-xcomposite-glx.so', 'PyQt5/Qt5/plugins/platforms/')],
     datas=[('domoriks.ico', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['PyQt5.Qt3D', 'PyQt5.QtMultimedia', 'PyQt5.QtWebEngine', 'PyQt5.QtBluetooth', 'PyQt5.QtNfc', 'PyQt5.QtSensors', 'PyQt5.QtSerialPort', 'PyQt5.QtSql', 'PyQt5.QtTest', 'PyQt5.QtTextToSpeech'],
     noarchive=False,
     optimize=0,
 )

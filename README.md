@@ -47,6 +47,12 @@ chmod +x build.sh
 
 Runs the same PyInstaller command with Linux/macOS path separators (`:` instead of `;` for `--add-data`). Output is `dist/Domoriks Configurator`.
 
+Install required system libraries (Ubuntu/Debian):
+
+```bash
+sudo apt install libxcb-xinerama0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-xkb1 libxkbcommon-x11-0
+```
+
 ### Setup (Linux / macOS)
 
 `setup.sh` is a helper that checks Python 3, installs dependencies from `requirements.txt`, runs the test suite, and makes `src/main.py` executable. Run it once before building:
