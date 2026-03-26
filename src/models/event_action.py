@@ -6,6 +6,7 @@ class EventAction:
     """Represents a single event action configuration."""
     
     ACTIONS = ["nop", "toggle", "on", "off"]
+    ACTION_DISPLAY = {"nop": "None", "on": "On", "off": "Off", "toggle": "Toggle"}
     
     def __init__(self, name, action="nop", delay_action="nop", delay=0, 
                  brightness=100, node=0, output=0, reserved=0, extra_action_index=0):

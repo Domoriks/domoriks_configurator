@@ -28,17 +28,18 @@ class ModuleEditorWidget(QWidget):
     def setup_ui(self):
         root = QVBoxLayout()
 
-        form = QFormLayout()
-        self.name_edit = QLineEdit(self.module.name if self.module else "")
-        self.name_edit.textChanged.connect(self._apply_changes)
-        form.addRow("Module Name:", self.name_edit)
-
-        self.node_spin = QSpinBox()
-        self.node_spin.setRange(0, 65535)
-        self.node_spin.setValue(getattr(self.module, 'node', 0) or 0)
-        self.node_spin.valueChanged.connect(self._apply_changes)
-        form.addRow("Node:", self.node_spin)
-        root.addLayout(form)
+        info_layout = QHBoxLayout()
+        info_layout.addWidget(QLabel("Module:"))
+        self.name_label = QLabel(self.module.name if self.module else "")
+        self.name_label.setStyleSheet("font-weight: bold;")
+        info_layout.addWidget(self.name_label)
+        info_layout.addSpacing(20)
+        info_layout.addWidget(QLabel("Node:"))
+        self.node_label = QLabel(str(self.module.node) if self.module else "")
+        self.node_label.setStyleSheet("font-weight: bold;")
+        info_layout.addWidget(self.node_label)
+        info_layout.addStretch()
+        root.addLayout(info_layout)
 
         root.addWidget(QLabel("Inputs:"))
         self.inputs_table = QTableWidget()
@@ -111,8 +112,6 @@ class ModuleEditorWidget(QWidget):
     def _apply_changes(self):
         if self._updating or not self.module:
             return
-        self.module.name = self.name_edit.text()
-        self.module.node = int(self.node_spin.value())
         outputs = self._get_outputs_from_table(silent=True)
         if outputs is not None:
             self.module.outputs = outputs
@@ -121,7 +120,7 @@ class ModuleEditorWidget(QWidget):
 
     def _get_outputs_from_table(self, silent=False):
         outputs = {}
-        node = self.node_spin.value()
+        node = self.module.node if self.module else 0
         channels_seen = set()
         for row in range(self.table.rowCount()):
             try:
@@ -153,8 +152,8 @@ class ModuleEditorWidget(QWidget):
     def set_module(self, module):
         self._updating = True
         self.module = module
-        self.name_edit.setText(module.name if module else "")
-        self.node_spin.setValue(getattr(module, 'node', 0) or 0)
+        self.name_label.setText(module.name if module else "")
+        self.node_label.setText(str(module.node) if module else "")
         self._populate_inputs()
         self.populate_table()
         self._updating = False

@@ -4,10 +4,52 @@ Module configuration widget for editing event actions.
 
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
                              QTableWidgetItem, QComboBox, QSpinBox, QPushButton,
-                             QLabel, QGroupBox, QTabWidget, QLineEdit, QHeaderView)
-from PyQt5.QtCore import Qt, pyqtSignal
+                             QLabel, QGroupBox, QTabWidget, QLineEdit, QHeaderView,
+                             QStyledItemDelegate, QStyleOptionViewItem)
+from PyQt5.QtCore import Qt, pyqtSignal, QRect
+from PyQt5.QtGui import QColor, QPalette
 from models.module import Module
 from models.event_action import EventAction
+
+
+class _OutputComboDelegate(QStyledItemDelegate):
+    """Delegate that renders ' - nodeX' suffix in grey."""
+
+    def paint(self, painter, option, index):
+        text = index.data(Qt.DisplayRole) or ""
+        sep = " - "
+        if sep in text and text != "(None)":
+            parts = text.split(sep, 1)
+            name_part = parts[0]
+            suffix = sep + parts[1]
+
+            # Draw selection/hover background
+            self.initStyleOption(option, index)
+            style = option.widget.style() if option.widget else None
+            if style:
+                style.drawPrimitive(style.PE_PanelItemViewItem, option, painter, option.widget)
+
+            painter.save()
+            rect = option.rect
+            # Draw name part in normal color
+            if option.state & 0x00004:  # QStyle.State_Selected
+                painter.setPen(option.palette.color(QPalette.HighlightedText))
+            else:
+                painter.setPen(option.palette.color(QPalette.Text))
+            name_rect = QRect(rect)
+            name_rect.setLeft(rect.left() + 4)
+            painter.drawText(name_rect, Qt.AlignLeft | Qt.AlignVCenter, name_part)
+
+            # Draw suffix in grey
+            fm = painter.fontMetrics()
+            name_width = fm.horizontalAdvance(name_part)
+            painter.setPen(QColor(150, 150, 150))
+            suffix_rect = QRect(rect)
+            suffix_rect.setLeft(rect.left() + 4 + name_width)
+            painter.drawText(suffix_rect, Qt.AlignLeft | Qt.AlignVCenter, suffix)
+            painter.restore()
+        else:
+            super().paint(painter, option, index)
 
 
 class ModuleWidget(QWidget):
@@ -15,9 +57,10 @@ class ModuleWidget(QWidget):
 
     module_modified = pyqtSignal()
 
-    def __init__(self, module, parent=None):
+    def __init__(self, module, all_modules=None, parent=None):
         super().__init__(parent)
         self.module = module
+        self.all_modules = list(all_modules) if all_modules else []
         self.setup_ui()
 
     def setup_ui(self):
@@ -40,33 +83,71 @@ class ModuleWidget(QWidget):
         layout.addWidget(tabs)
         self.setLayout(layout)
 
-    def _sorted_light_point_names(self):
-        def _name_key(n):
-            try:
-                return (0, int(n))
-            except Exception:
-                return (1, n.lower())
+    def _all_outputs(self):
+        """Build combined outputs dict from all modules."""
+        combined = {}
+        combined.update(self.module.outputs)
+        for m in self.all_modules:
+            if m is not self.module:
+                combined.update(m.outputs)
+        return combined
 
-        def _safe_int(value, fallback=float('inf')):
+    def _make_action_combo(self, current_value):
+        combo = QComboBox()
+        for a in EventAction.ACTIONS:
+            combo.addItem(EventAction.ACTION_DISPLAY.get(a, a), a)
+        idx = combo.findData(current_value)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        return combo
+
+    def _sorted_output_display_items(self):
+        """Return list of (display_text, name, node, output) for all outputs across modules.
+
+        Display text is 'name - nodeX' so user can see which module owns the output.
+        """
+        items = []
+        seen = set()
+        # Collect outputs from all modules
+        sources = [self.module] + [m for m in self.all_modules if m is not self.module]
+        for m in sources:
+            for name, (node, output) in m.outputs.items():
+                key = (name, node, output)
+                if key not in seen:
+                    seen.add(key)
+                    display = f"{name} - node{node}"
+                    items.append((display, name, node, output))
+
+        def _safe_int(v, fallback=float('inf')):
             try:
-                return int(value)
+                return int(v)
             except Exception:
                 return fallback
 
-        def _name_sort_key(n):
-            node = self.module.outputs[n][0]
-            output = self.module.outputs[n][1]
-            return (_safe_int(node), _safe_int(output), _name_key(n))
+        items.sort(key=lambda t: (_safe_int(t[2]), _safe_int(t[3]), t[1].lower()))
+        return items
 
-        def _fallback_name_key(n):
-            return _name_key(n)
+    def _make_light_combo(self, current_node=0, current_output=0):
+        """Create a light point combo populated with all outputs, with grey node suffix."""
+        combo = QComboBox()
+        delegate = _OutputComboDelegate(combo)
+        combo.setItemDelegate(delegate)
+        combo.addItem("(None)", None)
+        items = self._sorted_output_display_items()
+        selected_idx = 0
+        for i, (display, name, node, output) in enumerate(items):
+            combo.addItem(display, (node, output))
+            if node == current_node and output == current_output and current_node != 0:
+                selected_idx = i + 1  # +1 for (None)
+        combo.setCurrentIndex(selected_idx)
+        return combo
 
-        names = list(self.module.outputs.keys())
-        try:
-            names.sort(key=_name_sort_key)
-        except Exception:
-            names.sort(key=_fallback_name_key)
-        return names
+    def _resolve_combo_output(self, combo):
+        """Get (node, output) from combo's current item data."""
+        data = combo.currentData()
+        if data is not None:
+            return data
+        return (0, 0)
 
     def on_name_changed(self):
         self.module.name = self.name_edit.text()
@@ -99,28 +180,19 @@ class ModuleWidget(QWidget):
                 self.input_table.setItem(row, 1, QTableWidgetItem(press_display))
                 self.input_table.item(row, 1).setFlags(Qt.ItemIsEnabled)
 
-                action_combo = QComboBox()
-                action_combo.addItems(EventAction.ACTIONS)
-                action_combo.setCurrentText(action.action)
-                action_combo.currentTextChanged.connect(
-                    lambda text, r=row: self.on_input_changed(r))
+                action_combo = self._make_action_combo(action.action)
+                action_combo.currentIndexChanged.connect(
+                    lambda idx, r=row: self.on_input_changed(r))
                 self.input_table.setCellWidget(row, 2, action_combo)
 
-                delay_combo = QComboBox()
-                delay_combo.addItems(EventAction.ACTIONS)
-                delay_combo.setCurrentText(action.delay_action)
-                delay_combo.currentTextChanged.connect(
-                    lambda text, r=row: self.on_input_changed(r))
+                delay_combo = self._make_action_combo(action.delay_action)
+                delay_combo.currentIndexChanged.connect(
+                    lambda idx, r=row: self.on_input_changed(r))
                 self.input_table.setCellWidget(row, 3, delay_combo)
 
-                light_combo = QComboBox()
-                light_combo.addItem("(None)")
-                light_combo.addItems(self._sorted_light_point_names())
-                light_name = action.get_light_point_name(self.module.outputs)
-                if light_name:
-                    light_combo.setCurrentText(light_name)
-                light_combo.currentTextChanged.connect(
-                    lambda text, r=row: self.on_input_changed(r))
+                light_combo = self._make_light_combo(action.node, action.output)
+                light_combo.currentIndexChanged.connect(
+                    lambda idx, r=row: self.on_input_changed(r))
                 self.input_table.setCellWidget(row, 4, light_combo)
 
                 delay_spin = QSpinBox()
@@ -167,28 +239,19 @@ class ModuleWidget(QWidget):
             self.extra_table.setItem(row, 0, QTableWidgetItem(str(i)))
             self.extra_table.item(row, 0).setFlags(Qt.ItemIsEnabled)
 
-            action_combo = QComboBox()
-            action_combo.addItems(EventAction.ACTIONS)
-            action_combo.setCurrentText(action.action)
-            action_combo.currentTextChanged.connect(
-                lambda text, r=row: self.on_extra_changed(r))
+            action_combo = self._make_action_combo(action.action)
+            action_combo.currentIndexChanged.connect(
+                lambda idx, r=row: self.on_extra_changed(r))
             self.extra_table.setCellWidget(row, 1, action_combo)
 
-            delay_combo = QComboBox()
-            delay_combo.addItems(EventAction.ACTIONS)
-            delay_combo.setCurrentText(action.delay_action)
-            delay_combo.currentTextChanged.connect(
-                lambda text, r=row: self.on_extra_changed(r))
+            delay_combo = self._make_action_combo(action.delay_action)
+            delay_combo.currentIndexChanged.connect(
+                lambda idx, r=row: self.on_extra_changed(r))
             self.extra_table.setCellWidget(row, 2, delay_combo)
 
-            light_combo = QComboBox()
-            light_combo.addItem("(None)")
-            light_combo.addItems(self._sorted_light_point_names())
-            light_name = action.get_light_point_name(self.module.outputs)
-            if light_name:
-                light_combo.setCurrentText(light_name)
-            light_combo.currentTextChanged.connect(
-                lambda text, r=row: self.on_extra_changed(r))
+            light_combo = self._make_light_combo(action.node, action.output)
+            light_combo.currentIndexChanged.connect(
+                lambda idx, r=row: self.on_extra_changed(r))
             self.extra_table.setCellWidget(row, 3, light_combo)
 
             delay_spin = QSpinBox()
@@ -229,16 +292,12 @@ class ModuleWidget(QWidget):
         extra_spin = self.input_table.cellWidget(row, 6)
 
         action = self.module.input_actions[action_name]
-        action.action = action_combo.currentText()
-        action.delay_action = delay_combo.currentText()
+        action.action = action_combo.currentData()
+        action.delay_action = delay_combo.currentData()
         action.delay = delay_spin.value()
         action.extra_action_index = extra_spin.value()
 
-        light_name = light_combo.currentText()
-        if light_name != "(None)" and light_name in self.module.outputs:
-            action.node, action.output = self.module.outputs[light_name]
-        else:
-            action.node, action.output = 0, 0
+        action.node, action.output = self._resolve_combo_output(light_combo)
 
         self.module_modified.emit()
 
@@ -252,16 +311,12 @@ class ModuleWidget(QWidget):
         extra_spin = self.extra_table.cellWidget(row, 5)
 
         action = self.module.extra_actions[action_name]
-        action.action = action_combo.currentText()
-        action.delay_action = delay_combo.currentText()
+        action.action = action_combo.currentData()
+        action.delay_action = delay_combo.currentData()
         action.delay = delay_spin.value()
         action.extra_action_index = extra_spin.value()
 
-        light_name = light_combo.currentText()
-        if light_name != "(None)" and light_name in self.module.outputs:
-            action.node, action.output = self.module.outputs[light_name]
-        else:
-            action.node, action.output = 0, 0
+        action.node, action.output = self._resolve_combo_output(light_combo)
 
         self.module_modified.emit()
 
@@ -270,8 +325,8 @@ class ModuleWidget(QWidget):
         action = EventAction(action_name)
         self.module.extra_actions[action_name] = action
 
-        self.extra_table.cellWidget(row, 1).setCurrentText("nop")
-        self.extra_table.cellWidget(row, 2).setCurrentText("nop")
+        self.extra_table.cellWidget(row, 1).setCurrentIndex(0)
+        self.extra_table.cellWidget(row, 2).setCurrentIndex(0)
         self.extra_table.cellWidget(row, 3).setCurrentIndex(0)
         self.extra_table.cellWidget(row, 4).setValue(0)
         self.extra_table.cellWidget(row, 5).setValue(0)
@@ -280,30 +335,40 @@ class ModuleWidget(QWidget):
 
     def update_outputs(self, outputs):
         self.module.outputs = outputs
-        new_items = ["(None)"] + self._sorted_light_point_names()
+        items = self._sorted_output_display_items()
 
         for row in range(self.input_table.rowCount()):
             combo = self.input_table.cellWidget(row, 4)
             if isinstance(combo, QComboBox):
-                current_text = combo.currentText()
+                old_data = combo.currentData()
+                combo.blockSignals(True)
                 combo.clear()
-                combo.addItems(new_items)
-                index = combo.findText(current_text)
-                if index != -1:
-                    combo.setCurrentIndex(index)
-                else:
+                combo.addItem("(None)", None)
+                selected = 0
+                for i, (display, name, node, output) in enumerate(items):
+                    combo.addItem(display, (node, output))
+                    if old_data and old_data == (node, output):
+                        selected = i + 1
+                combo.setCurrentIndex(selected)
+                combo.blockSignals(False)
+                if selected == 0 and old_data:
                     self.on_input_changed(row)
 
         for row in range(self.extra_table.rowCount()):
             combo = self.extra_table.cellWidget(row, 3)
             if isinstance(combo, QComboBox):
-                current_text = combo.currentText()
+                old_data = combo.currentData()
+                combo.blockSignals(True)
                 combo.clear()
-                combo.addItems(new_items)
-                index = combo.findText(current_text)
-                if index != -1:
-                    combo.setCurrentIndex(index)
-                else:
+                combo.addItem("(None)", None)
+                selected = 0
+                for i, (display, name, node, output) in enumerate(items):
+                    combo.addItem(display, (node, output))
+                    if old_data and old_data == (node, output):
+                        selected = i + 1
+                combo.setCurrentIndex(selected)
+                combo.blockSignals(False)
+                if selected == 0 and old_data:
                     self.on_extra_changed(row)
 
     def rebuild_ui(self):
