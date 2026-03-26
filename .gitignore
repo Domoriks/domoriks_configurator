@@ -1,1 +1,6 @@
 __pycache__/
+build/
+dist/
+.venv/
+
+Domotica_Config_*.json

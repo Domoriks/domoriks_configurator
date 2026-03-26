@@ -1,5 +1,5 @@
 """
-Main application window for EventAction Configurator.
+Main application window for Domoriks Configurator.
 """
 import sys
 import os
@@ -30,12 +30,12 @@ class MainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("EventAction Configurator")
         self.setWindowIcon(QIcon(resource_path("domoriks.ico")))
         self.setGeometry(100, 100, 1200, 800)
         
         self.project = Project()
         self.current_file = None
+        self._update_title()
         
         self.setup_ui()
         self.setup_menu()
@@ -113,17 +113,9 @@ class MainWindow(QMainWindow):
         actions_layout = QVBoxLayout()
 
         self.module_tabs = QTabWidget()
-        self.module_tabs.setTabsClosable(True)
-        self.module_tabs.tabCloseRequested.connect(self.close_module_tab)
         actions_layout.addWidget(self.module_tabs)
 
         action_btn_row = QHBoxLayout()
-        import_btn = QPushButton("Import from C")
-        import_btn.clicked.connect(self.import_c_code)
-        action_btn_row.addWidget(import_btn)
-        export_btn = QPushButton("Export to C")
-        export_btn.clicked.connect(self.export_c_code)
-        action_btn_row.addWidget(export_btn)
         action_btn_row.addStretch()
         actions_layout.addLayout(action_btn_row)
 
@@ -159,19 +151,29 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         self._add_action(file_menu, "Exit", self.close, "Ctrl+Q")
 
+        ie_menu = menubar.addMenu("Import/Export")
+        self._add_action(ie_menu, "Export All Actions", self.export_c_code)
+        self._add_action(ie_menu, "Import All Actions", self.import_c_code)
+        ie_menu.addSeparator()
+        self._export_selected_c_action = self._add_action(ie_menu, "Export Module Actions", self.export_selected_module_c)
+        self._import_selected_c_action = self._add_action(ie_menu, "Import Module Actions", self.import_selected_module_c)
+        ie_menu.addSeparator()
+        self._add_action(ie_menu, "Import Module (JSON)", self.import_module_json)
+        self._add_action(ie_menu, "Export Module (JSON)", self.export_module_json)
+
         help_menu = menubar.addMenu("Help")
         self._add_action(help_menu, "About", self.show_about)
     
     def setup_toolbar(self):
         toolbar = QToolBar("Main Toolbar")
+        toolbar.setMovable(False)
+        toolbar.setToolButtonStyle(2)  # Qt.ToolButtonTextOnly
         self.addToolBar(toolbar)
 
-    
         modules_action = QAction("Modules", self)
         modules_action.setCheckable(True)
         modules_action.triggered.connect(self.switch_to_modules)
         toolbar.addAction(modules_action)
-        # Default to Modules view selected on startup
         modules_action.setChecked(True)
         self._modules_toolbar_action = modules_action
 
@@ -181,13 +183,19 @@ class MainWindow(QMainWindow):
         toolbar.addAction(actions_action)
         self._actions_toolbar_action = actions_action
 
-        toolbar.addSeparator()
-
-        # '+ Module' toolbar action removed per UI simplification
+        self._update_toolbar_state()
     
     def setup_statusbar(self):
         """Setup status bar."""
         self.statusBar().showMessage("Ready")
+
+    def _update_toolbar_state(self):
+        """Enable/disable menu actions based on current view."""
+        if not hasattr(self, '_export_selected_c_action'):
+            return
+        in_actions = self.main_stack.currentIndex() == 1
+        self._export_selected_c_action.setEnabled(in_actions)
+        self._import_selected_c_action.setEnabled(in_actions)
     
     def new_project(self):
         """Create a new project."""
@@ -205,6 +213,7 @@ class MainWindow(QMainWindow):
         self.project = Project("New Project")
         self.current_file = None
         self.project_name_edit.setText(self.project.name)
+        self._update_title()
         
         # Clear all module tabs
         self.module_tabs.clear()
@@ -230,6 +239,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self.refresh_module_list()
+        self._update_toolbar_state()
         # Select first module if present and populate inline editor
         try:
             if self.modules_list.count() > 0:
@@ -254,27 +264,38 @@ class MainWindow(QMainWindow):
                 self._actions_toolbar_action.setChecked(True)
         except Exception:
             pass
+        self._update_toolbar_state()
 
     def refresh_module_list(self):
         """Refresh the modules list widget from project data."""
         try:
+            current_name = None
+            if self.modules_list.currentItem():
+                current_name = self.modules_list.currentItem().text()
             self.modules_list.clear()
             for m in self.project.modules:
                 self.modules_list.addItem(m.name)
+            # Restore previous selection or default to first
+            restored = False
+            if current_name:
+                for i in range(self.modules_list.count()):
+                    if self.modules_list.item(i).text() == current_name:
+                        self.modules_list.setCurrentRow(i)
+                        restored = True
+                        break
+            if not restored and self.modules_list.count() > 0:
+                self.modules_list.setCurrentRow(0)
             # Keep inline editor's module list reference up-to-date
             try:
                 if hasattr(self, 'module_editor'):
                     self.module_editor.all_modules = list(self.project.modules)
-                    # If nothing is selected, default to the first module
-                    if self.modules_list.count() > 0 and self.modules_list.currentRow() < 0:
-                        self.modules_list.setCurrentRow(0)
             except Exception:
                 pass
         except Exception:
             pass
 
     def _on_module_double_clicked(self, item):
-        self.open_actions_for_selected()
+        self.edit_selected_module()
 
     def _on_modules_selection_changed(self, current, previous):
         """Handle selection change in modules list."""
@@ -291,19 +312,21 @@ class MainWindow(QMainWindow):
     def _on_module_saved(self, module):
         """Handler called when inline editor emits saved signal."""
         try:
-            # Update any open module tab for this module
+            # Update all open module tabs (outputs from any module may appear in combos)
             for i in range(self.module_tabs.count()):
                 tab_widget = self.module_tabs.widget(i)
-                if getattr(tab_widget, 'module', None) is module:
+                if not hasattr(tab_widget, 'module'):
+                    continue
+                tab_widget.all_modules = list(self.project.modules)
+                if tab_widget.module is module:
                     self.module_tabs.setTabText(i, module.name)
                     try:
                         tab_widget.name_edit.blockSignals(True)
                         tab_widget.name_edit.setText(module.name)
                         tab_widget.name_edit.blockSignals(False)
-                        tab_widget.update_outputs(module.outputs)
                     except Exception:
                         pass
-                    break
+                tab_widget.update_outputs(tab_widget.module.outputs)
             # Refresh list and mark project modified
             self.refresh_module_list()
             self.on_module_modified()
@@ -359,19 +382,33 @@ class MainWindow(QMainWindow):
             old_extras = module.num_extra_actions
             module.update_from_dict(config)
 
-            # Update action tab if open
+            idx = self.find_module_tab_index(module)
+            if module.num_inputs == 0:
+                # Remove action tab if inputs set to zero
+                if idx != -1:
+                    self.module_tabs.removeTab(idx)
+            elif idx != -1:
+                # Update existing action tab
+                tab_widget = self.module_tabs.widget(idx)
+                tab_widget.all_modules = list(self.project.modules)
+                self.module_tabs.setTabText(idx, module.name)
+                tab_widget.name_edit.blockSignals(True)
+                tab_widget.name_edit.setText(module.name)
+                tab_widget.name_edit.blockSignals(False)
+                if module.num_inputs != old_inputs or module.num_extra_actions != old_extras:
+                    tab_widget.rebuild_ui()
+                else:
+                    tab_widget.update_outputs(module.outputs)
+            elif old_inputs == 0 and module.num_inputs > 0:
+                # Inputs changed from 0 to >0, add new tab
+                self.add_module_tab(module)
+
+            # Refresh combos on all other open tabs
             for i in range(self.module_tabs.count()):
-                tab_widget = self.module_tabs.widget(i)
-                if tab_widget.module is module:
-                    self.module_tabs.setTabText(i, module.name)
-                    tab_widget.name_edit.blockSignals(True)
-                    tab_widget.name_edit.setText(module.name)
-                    tab_widget.name_edit.blockSignals(False)
-                    if module.num_inputs != old_inputs or module.num_extra_actions != old_extras:
-                        tab_widget.rebuild_ui()
-                    else:
-                        tab_widget.update_outputs(module.outputs)
-                    break
+                tw = self.module_tabs.widget(i)
+                if hasattr(tw, 'module') and tw.module is not module:
+                    tw.all_modules = list(self.project.modules)
+                    tw.update_outputs(tw.module.outputs)
 
             # Update inline editor
             if hasattr(self, 'module_editor'):
@@ -415,6 +452,7 @@ class MainWindow(QMainWindow):
                 self.project = Project.load_from_file(filepath)
                 self.current_file = filepath
                 self.project_name_edit.setText(self.project.name)
+                self._update_title()
                 
                 # Clear and reload module tabs (only modules with inputs)
                 self.module_tabs.clear()
@@ -480,7 +518,7 @@ class MainWindow(QMainWindow):
     
     def add_module_tab(self, module):
         """Add a module tab to the UI."""
-        widget = ModuleWidget(module)
+        widget = ModuleWidget(module, all_modules=self.project.modules)
         widget.module_modified.connect(self.on_module_modified)
         self.module_tabs.addTab(widget, module.name)
         self.module_tabs.setCurrentWidget(widget)
@@ -556,11 +594,93 @@ class MainWindow(QMainWindow):
         c_code = self.project.to_c_code()
         dialog = CCodeExportDialog(c_code, self)
         dialog.exec_()
+
+    def export_selected_module_c(self):
+        """Export the currently selected module's actions to C code."""
+        current = self.module_tabs.currentWidget()
+        if not current or not hasattr(current, 'module'):
+            QMessageBox.information(self, "No Module", "No module tab is selected.")
+            return
+        c_code = current.module.to_c_code()
+        dialog = CCodeExportDialog(c_code, self)
+        dialog.exec_()
+
+    def import_selected_module_c(self):
+        """Import actions from C code into the currently selected module."""
+        current = self.module_tabs.currentWidget()
+        if not current or not hasattr(current, 'module'):
+            QMessageBox.information(self, "No Module", "No module tab is selected.")
+            return
+        dialog = CCodeImportDialog(self)
+        if dialog.exec_() == QDialog.Accepted:
+            c_code = dialog.get_c_code()
+            try:
+                actions = CCodeParser.parse_c_code(c_code)
+                module = current.module
+                for name, action in actions.items():
+                    module.set_action(name, action)
+                current.rebuild_ui()
+                self.on_module_modified()
+                self.statusBar().showMessage(f"Imported {len(actions)} actions into {module.name}")
+            except Exception as e:
+                QMessageBox.critical(self, "Import Error", f"Failed to import: {e}")
+
+    def import_module_json(self):
+        """Import a single module from a JSON file."""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Import Module from JSON", "", "JSON Files (*.json);;All Files (*)"
+        )
+        if filepath:
+            try:
+                import json
+                with open(filepath, 'r') as f:
+                    data = json.load(f)
+                module = Module.from_dict(data)
+                self.project.add_module(module)
+                if module.num_inputs > 0:
+                    self.add_module_tab(module)
+                self.refresh_module_list()
+                self.statusBar().showMessage(f"Imported module: {module.name}")
+            except Exception as e:
+                QMessageBox.critical(self, "Import Error", f"Failed to import module: {e}")
+
+    def export_module_json(self):
+        """Export the selected module to a JSON file."""
+        # Try actions tab first, then modules list
+        module = None
+        current = self.module_tabs.currentWidget()
+        if current and hasattr(current, 'module'):
+            module = current.module
+        else:
+            item = self.modules_list.currentItem()
+            if item:
+                module = next((m for m in self.project.modules if m.name == item.text()), None)
+        if not module:
+            QMessageBox.information(self, "No Module", "No module selected.")
+            return
+        suggested = module.name.replace(" ", "_") + ".json"
+        filepath, _ = QFileDialog.getSaveFileName(
+            self, "Export Module to JSON", suggested, "JSON Files (*.json);;All Files (*)"
+        )
+        if filepath:
+            try:
+                import json
+                with open(filepath, 'w') as f:
+                    json.dump(module.to_dict(), f, indent=2)
+                self.statusBar().showMessage(f"Exported module: {module.name}")
+            except Exception as e:
+                QMessageBox.critical(self, "Export Error", f"Failed to export module: {e}")
     
+    def _update_title(self):
+        name = self.project.name or "Untitled"
+        title = f"Domoriks Configurator - {name}"
+        if self.project.modified:
+            title += "*"
+        self.setWindowTitle(title)
+
     def _mark_saved(self):
-        title = self.windowTitle()
-        if title.endswith("*"):
-            self.setWindowTitle(title[:-1])
+        self.project.modified = False
+        self._update_title()
 
     def _on_project_name_changed(self, text):
         self.project.name = text
@@ -569,14 +689,13 @@ class MainWindow(QMainWindow):
     def on_module_modified(self):
         """Handle module modification."""
         self.project.modified = True
-        if not self.windowTitle().endswith("*"):
-            self.setWindowTitle(self.windowTitle() + "*")
+        self._update_title()
     
     def show_about(self):
         """Show about dialog."""
         QMessageBox.about(
-            self, "About EventAction Configurator",
-            "<h3>EventAction Configurator</h3>"
+            self, "About Domoriks Configurator",
+            "<h3>Domoriks Configurator</h3>"
             "<p>A professional home automation event configuration tool.</p>"
             "<p><b>Features:</b></p>"
             "<ul>"
@@ -585,7 +704,7 @@ class MainWindow(QMainWindow):
             "<li>Configurable light points</li>"
             "<li>Input validation</li>"
             "</ul>"
-            "<p>Version 1.0</p>"
+            "<p>Version 0.2.0</p>"
         )
     
     def closeEvent(self, event):

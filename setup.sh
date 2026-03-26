@@ -1,8 +1,8 @@
 #!/bin/bash
-# Setup script for EventAction Configurator
+# Setup script for Domoriks Configurator
 
 echo "=================================="
-echo "EventAction Configurator - Setup"
+echo "Domoriks Configurator - Setup"
 echo "=================================="
 echo ""
 
