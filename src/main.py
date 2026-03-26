@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-EventAction Configurator - Main Entry Point
+Domoriks Configurator - Main Entry Point
 
 A professional home automation event configuration tool with bidirectional
 C-code ↔ GUI conversion.
@@ -28,7 +28,7 @@ def main():
     icon_path = resource_path("domoriks.ico")
     app.setWindowIcon(QIcon(icon_path))
 
-    app.setApplicationName("Domoriks Actions Configurator")
+    app.setApplicationName("Domoriks Configurator")
     app.setOrganizationName("Domoriks")
     
     # Set application style
