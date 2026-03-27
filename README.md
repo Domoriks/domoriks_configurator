@@ -1,6 +1,6 @@
 # Domoriks Configurator
 
-**Version 0.2.0**
+**Version 0.2.1**
 
 A professional home automation event configuration tool with bidirectional C-code ↔ GUI conversion.
 
@@ -131,6 +131,9 @@ Project file (JSON):
 
 
 ## Changelog
+
+### v0.2.1
+- Bug fixes related to outputs view
 
 ### v0.2.0
 - Renamed "Device" to "Module" throughout the application

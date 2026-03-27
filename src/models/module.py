@@ -31,7 +31,7 @@ class Module:
         self.outputs = {}
         for i in range(1, num_outputs + 1):
             output_name = f"Output {i}"
-            self.outputs[output_name] = [int(node) if node else 0, i - 1]
+            self.outputs[output_name] = i - 1
 
     def set_action(self, action_name, event_action):
         if action_name in self.input_actions:
@@ -76,35 +76,14 @@ class Module:
             "num_extra_actions": self.num_extra_actions,
             "num_outputs": self.num_outputs,
             "input_actions": {
-                name: {
-                    "action": action.action,
-                    "delay_action": action.delay_action,
-                    "delay": action.delay,
-                    "brightness": action.brightness,
-                    "node": action.node,
-                    "output": action.output,
-                    "extra_action_index": action.extra_action_index
-                }
+                name: action.to_dict()
                 for name, action in self.input_actions.items()
             },
             "extra_actions": {
-                name: {
-                    "action": action.action,
-                    "delay_action": action.delay_action,
-                    "delay": action.delay,
-                    "brightness": action.brightness,
-                    "node": action.node,
-                    "output": action.output,
-                    "extra_action_index": action.extra_action_index
-                }
+                name: action.to_dict()
                 for name, action in self.extra_actions.items()
             },
-            "outputs": {
-                name: value[1]
-                for name, value in self.outputs.items()
-                if isinstance(value, (list, tuple)) and len(value) >= 2
-                and value[0] == self.node
-            }
+            "outputs": dict(self.outputs)
         }
 
     @classmethod
@@ -117,51 +96,28 @@ class Module:
             node=data.get("node", data.get("id", 0)),
         )
         for name, action_data in data.get("input_actions", {}).items():
-            action = EventAction(
-                name=name,
-                action=action_data.get("action", "nop"),
-                delay_action=action_data.get("delay_action", "nop"),
-                delay=action_data.get("delay", 0),
-                brightness=action_data.get("brightness", 100),
-                node=action_data.get("node", 0),
-                output=action_data.get("output", 0),
-                extra_action_index=action_data.get("extra_action_index", 0)
-            )
-            module.input_actions[name] = action
+            module.input_actions[name] = EventAction.from_dict(name, action_data)
         for name, action_data in data.get("extra_actions", {}).items():
-            action = EventAction(
-                name=name,
-                action=action_data.get("action", "nop"),
-                delay_action=action_data.get("delay_action", "nop"),
-                delay=action_data.get("delay", 0),
-                brightness=action_data.get("brightness", 100),
-                node=action_data.get("node", 0),
-                output=action_data.get("output", 0),
-                extra_action_index=action_data.get("extra_action_index", 0)
-            )
-            module.extra_actions[name] = action
+            module.extra_actions[name] = EventAction.from_dict(name, action_data)
 
         json_outputs = data.get("outputs", {})
         if json_outputs:
             module.outputs = {}
         for name, out_data in json_outputs.items():
             try:
+                # Support legacy [node, output_nr] arrays as well as plain ints
                 if isinstance(out_data, (int, float)):
-                    module.outputs[name] = [int(module.node), int(out_data)]
+                    module.outputs[name] = int(out_data)
                 else:
-                    module.outputs[name] = [int(out_data[0]), int(out_data[1])]
+                    module.outputs[name] = int(out_data[1])
             except Exception:
-                module.outputs[name] = [0, 0]
+                module.outputs[name] = 0
 
         if not module.node:
             nodes = []
-            for (n, o) in module.outputs.values():
-                if isinstance(n, int) and n not in (0, 255):
-                    nodes.append(n)
-            if not nodes:
-                for act in list(module.input_actions.values()) + list(module.extra_actions.values()):
-                    if act.node and act.node not in (0, 255):
-                        nodes.append(act.node)
+            for act in list(module.input_actions.values()) + list(module.extra_actions.values()):
+                if act.node and act.node not in (0, 255):
+                    nodes.append(act.node)
             if nodes:
                 from collections import Counter
                 module.node = int(Counter(nodes).most_common(1)[0][0])
@@ -211,6 +167,6 @@ class Module:
                 for i in range(min(new_num_outputs, len(old_items))):
                     new_outputs[old_items[i][0]] = old_items[i][1]
                 for i in range(len(old_items), new_num_outputs):
-                    new_outputs[f"Output {i + 1}"] = [self.node, i]
+                    new_outputs[f"Output {i + 1}"] = i
                 self.outputs = new_outputs
             self.num_outputs = new_num_outputs

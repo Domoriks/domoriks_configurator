@@ -82,19 +82,13 @@ class ModuleEditorWidget(QWidget):
             except Exception:
                 return fallback
 
-        def _channel(value):
-            if isinstance(value, (list, tuple)) and len(value) >= 2:
-                return value[1]
-            return value
-
         items = list(outputs.items())
         try:
-            items.sort(key=lambda kv: _safe_int(_channel(kv[1])))
+            items.sort(key=lambda kv: _safe_int(kv[1]))
         except Exception:
             items.sort(key=lambda kv: kv[0].lower())
 
-        for row, (name, value) in enumerate(items):
-            channel = _channel(value)
+        for row, (name, channel) in enumerate(items):
             name_item = QTableWidgetItem(name)
             channel_item = QTableWidgetItem(str(channel))
             try:
@@ -113,14 +107,12 @@ class ModuleEditorWidget(QWidget):
         if self._updating or not self.module:
             return
         outputs = self._get_outputs_from_table(silent=True)
-        if outputs is not None:
-            self.module.outputs = outputs
-            self.module.num_outputs = len(outputs)
+        self.module.outputs = outputs
+        self.module.num_outputs = len(outputs)
         self.saved.emit(self.module)
 
     def _get_outputs_from_table(self, silent=False):
         outputs = {}
-        node = self.module.node if self.module else 0
         channels_seen = set()
         for row in range(self.table.rowCount()):
             try:
@@ -139,7 +131,7 @@ class ModuleEditorWidget(QWidget):
                         )
                     return None
                 channels_seen.add(channel)
-                outputs[name] = [node, channel]
+                outputs[name] = channel
             except (ValueError, AttributeError):
                 if not silent:
                     QMessageBox.warning(

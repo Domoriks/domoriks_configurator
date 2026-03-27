@@ -108,15 +108,15 @@ class ModuleWidget(QWidget):
         """
         items = []
         seen = set()
-        # Collect outputs from all modules
         sources = [self.module] + [m for m in self.all_modules if m is not self.module]
         for m in sources:
-            for name, (node, output) in m.outputs.items():
-                key = (name, node, output)
+            node = m.node
+            for name, output_nr in m.outputs.items():
+                key = (name, node, output_nr)
                 if key not in seen:
                     seen.add(key)
                     display = f"{name} - node{node}"
-                    items.append((display, name, node, output))
+                    items.append((display, name, node, output_nr))
 
         def _safe_int(v, fallback=float('inf')):
             try:

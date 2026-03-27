@@ -20,19 +20,36 @@ class EventAction:
         self.reserved = reserved
         self.extra_action_index = extra_action_index
     
+    @classmethod
+    def from_dict(cls, name, data):
+        return cls(
+            name=name,
+            action=data.get("action", "nop"),
+            delay_action=data.get("delay_action", "nop"),
+            delay=data.get("delay", 0),
+            brightness=data.get("brightness", 100),
+            node=data.get("node", 0),
+            output=data.get("output", 0),
+            extra_action_index=data.get("extra_action_index", 0),
+        )
+
+    def to_dict(self):
+        return {
+            "action": self.action,
+            "delay_action": self.delay_action,
+            "delay": self.delay,
+            "brightness": self.brightness,
+            "node": self.node,
+            "output": self.output,
+            "extra_action_index": self.extra_action_index,
+        }
+
     def to_c_code(self):
         """Generate C code representation."""
         return (f"EventAction {self.name} = {{ {self.action}, {self.delay_action}, "
                 f"{self.delay}, {self.brightness}, {self.node}, {self.output}, "
                 f"{self.reserved}, {self.extra_action_index} }};")
-    
-    def get_light_point_name(self, light_points_dict):
-        """Get light point name from node and output."""
-        for name, (node, output) in light_points_dict.items():
-            if node == self.node and output == self.output:
-                return name
-        return None
-    
+
     def is_empty(self):
         """Check if this is an empty/default action."""
         return (self.action == "nop" and self.delay_action == "nop" and 

@@ -704,7 +704,7 @@ class MainWindow(QMainWindow):
             "<li>Configurable light points</li>"
             "<li>Input validation</li>"
             "</ul>"
-            "<p>Version 0.2.0</p>"
+            "<p>Version 0.2.1</p>"
         )
     
     def closeEvent(self, event):

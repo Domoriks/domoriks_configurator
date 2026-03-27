@@ -59,20 +59,11 @@ class Project:
         for module_data in modules_data:
             module = Module.from_dict(module_data)
             if not module.outputs and legacy_light_points:
-                module.outputs = {k: list(v) for k, v in legacy_light_points.items()}
+                module.outputs = {
+                    k: int(v[1]) if isinstance(v, (list, tuple)) else int(v)
+                    for k, v in legacy_light_points.items()
+                }
             project.modules.append(module)
-
-        # Build shared outputs pool from output modules (num_inputs == 0)
-        shared_outputs = {}
-        for module in project.modules:
-            if module.num_inputs == 0:
-                shared_outputs.update(module.outputs)
-
-        # Assign shared outputs to switch modules that have none
-        if shared_outputs:
-            for module in project.modules:
-                if module.num_inputs > 0 and not module.outputs:
-                    module.outputs = dict(shared_outputs)
 
         project.modified = False
         return project
