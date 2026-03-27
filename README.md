@@ -134,6 +134,7 @@ Project file (JSON):
 
 ### v0.2.1
 - Bug fixes related to outputs view
+- Delay is in seconds not millis
 
 ### v0.2.0
 - Renamed "Device" to "Module" throughout the application

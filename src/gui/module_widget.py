@@ -161,7 +161,7 @@ class ModuleWidget(QWidget):
         self.input_table.setColumnCount(7)
         self.input_table.setHorizontalHeaderLabels([
             "Input", "Press Type", "Action", "Delay Action",
-            "Light Point", "Delay (ms)", "Extra Action #"
+            "Light Point", "Delay (s)", "Extra Action #"
         ])
 
         num_rows = self.module.num_inputs * 3
@@ -227,7 +227,7 @@ class ModuleWidget(QWidget):
         self.extra_table.setColumnCount(7)
         self.extra_table.setHorizontalHeaderLabels([
             "#", "Action", "Delay Action", "Light Point",
-            "Delay (ms)", "Extra Action #", "Clear"
+            "Delay (s)", "Extra Action #", "Clear"
         ])
         self.extra_table.setRowCount(self.module.num_extra_actions)
 
