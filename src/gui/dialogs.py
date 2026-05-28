@@ -2,11 +2,33 @@
 Dialog windows for various configuration tasks.
 """
 
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTextEdit,
-                             QPushButton, QLabel, QMessageBox, QFileDialog,
-                             QLineEdit, QSpinBox, QFormLayout, QTableWidget,
-                             QTableWidgetItem, QHeaderView, QAbstractItemView,
-                             QWidget, QListWidget, QSizePolicy)
+import json
+import difflib
+from html import escape
+
+from PyQt5.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QVBoxLayout,
+    QHBoxLayout,
+    QTextEdit,
+    QPushButton,
+    QLabel,
+    QMessageBox,
+    QFileDialog,
+    QLineEdit,
+    QSpinBox,
+    QFormLayout,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QAbstractItemView,
+    QWidget,
+    QListWidget,
+    QSizePolicy,
+    QSplitter,
+)
 from PyQt5.QtCore import Qt, pyqtSignal
 
 
@@ -331,7 +353,7 @@ class ModuleDialog(QDialog):
         layout.addRow("Number of Outputs:", self.outputs_spin)
         
         self.node_spin = QSpinBox()
-        self.node_spin.setRange(0, 65535)
+        self.node_spin.setRange(0, 255)
         self.node_spin.setValue(self._module.node if self._module else 64)
         layout.addRow("Node:", self.node_spin)
         
@@ -357,3 +379,336 @@ class ModuleDialog(QDialog):
             "num_outputs": self.outputs_spin.value(),
             "node": self.node_spin.value()
         }
+
+
+class ApiSettingsDialog(QDialog):
+    """Dialog for API base URL and token settings."""
+
+    def __init__(self, base_url="", token="", token_session_only=False, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("API Settings")
+        self.setMinimumWidth(520)
+        self._token_session_only = bool(token_session_only)
+        self.setup_ui(base_url, token)
+
+    def setup_ui(self, base_url, token):
+        layout = QFormLayout()
+
+        self.base_url_edit = QLineEdit(base_url or "")
+        self.base_url_edit.setPlaceholderText("http://homeassistant.local:8123")
+        layout.addRow("Base URL:", self.base_url_edit)
+
+        self.token_edit = QLineEdit(token or "")
+        self.token_edit.setEchoMode(QLineEdit.Password)
+        self.token_edit.setPlaceholderText("Long-lived access token")
+        layout.addRow("API Token:", self.token_edit)
+
+        self.session_only_check = QCheckBox("Session only: do not overwrite token in saved JSON")
+        self.session_only_check.setChecked(self._token_session_only)
+        layout.addRow("", self.session_only_check)
+
+        button_layout = QHBoxLayout()
+        self.clean_button = QPushButton("Clean Token")
+        self.clean_button.clicked.connect(self._clean_token)
+        button_layout.addWidget(self.clean_button)
+
+        button_layout.addStretch()
+
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.accept)
+        button_layout.addWidget(save_btn)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_btn)
+
+        root = QVBoxLayout()
+        root.addLayout(layout)
+        root.addLayout(button_layout)
+        self.setLayout(root)
+
+    def _clean_token(self):
+        self.token_edit.clear()
+
+    def get_settings(self):
+        return {
+            "base_url": self.base_url_edit.text().strip(),
+            "token": self.token_edit.text().strip(),
+            "token_session_only": self.session_only_check.isChecked(),
+        }
+
+
+class BusDetectDialog(QDialog):
+    """Collect detect range and timeout."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Detect Bus")
+        self.setMinimumWidth(360)
+        layout = QFormLayout()
+
+        self.start_spin = QSpinBox()
+        self.start_spin.setRange(0, 255)
+        self.start_spin.setValue(0)
+        layout.addRow("Start slave:", self.start_spin)
+
+        self.end_spin = QSpinBox()
+        self.end_spin.setRange(0, 255)
+        self.end_spin.setValue(255)
+        layout.addRow("End slave:", self.end_spin)
+
+        self.timeout_spin = QSpinBox()
+        self.timeout_spin.setRange(1, 30000)
+        self.timeout_spin.setValue(1000)
+        self.timeout_spin.setSuffix(" ms")
+        layout.addRow("Timeout:", self.timeout_spin)
+
+        button_layout = QHBoxLayout()
+        ok_btn = QPushButton("Detect")
+        ok_btn.clicked.connect(self.accept)
+        button_layout.addWidget(ok_btn)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_btn)
+
+        root = QVBoxLayout()
+        root.addLayout(layout)
+        root.addLayout(button_layout)
+        self.setLayout(root)
+
+    def get_values(self):
+        return {
+            "start_slave": self.start_spin.value(),
+            "end_slave": self.end_spin.value(),
+            "timeout": self.timeout_spin.value() / 1000.0,
+        }
+
+
+class JsonSideBySideDiffDialog(QDialog):
+    """Show side-by-side colored JSON diff with accept/deny and byte-order toggle."""
+
+    def __init__(self, left_title, right_title, left_json, right_json, parent=None,
+                 refresh_callback=None):
+        super().__init__(parent)
+        self.setWindowTitle("Review Device Config")
+        self.setMinimumSize(1200, 700)
+        self._left_title = left_title
+        self._right_title = right_title
+        self._refresh_callback = refresh_callback
+        self.device_actions = None
+
+        self.left_view = QTextEdit()
+        self.left_view.setReadOnly(True)
+
+        self.right_view = QTextEdit()
+        self.right_view.setReadOnly(True)
+
+        self._update_diff(left_json, right_json)
+
+        splitter = QSplitter()
+        splitter.addWidget(self.left_view)
+        splitter.addWidget(self.right_view)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+
+        button_layout = QHBoxLayout()
+        deny_btn = QPushButton("Deny")
+        deny_btn.clicked.connect(self.reject)
+        button_layout.addWidget(deny_btn)
+
+        if refresh_callback:
+            button_layout.addStretch()
+            button_layout.addWidget(QLabel("Byte Order:"))
+            self.byte_order_combo = QComboBox()
+            self.byte_order_combo.addItems(["Auto Detect", "Standard (new FW)", "Swapped (old FW)"])
+            self.byte_order_combo.setToolTip("Change byte order and re-read device registers")
+            self.byte_order_combo.currentIndexChanged.connect(self._on_byte_order_changed)
+            button_layout.addWidget(self.byte_order_combo)
+
+        button_layout.addStretch()
+        accept_btn = QPushButton("Accept")
+        accept_btn.clicked.connect(self.accept)
+        button_layout.addWidget(accept_btn)
+
+        root = QVBoxLayout()
+        root.addWidget(splitter)
+        root.addLayout(button_layout)
+        self.setLayout(root)
+
+    def _update_diff(self, left_json, right_json):
+        left_html, right_html = _json_side_by_side_html(
+            left_json, right_json, self._left_title, self._right_title
+        )
+        self.left_view.setHtml(left_html)
+        self.right_view.setHtml(right_html)
+
+    def _on_byte_order_changed(self, index):
+        if not self._refresh_callback:
+            return
+        byte_swap_map = {0: None, 1: False, 2: True}
+        byte_swap = byte_swap_map[index]
+        try:
+            left_json, right_json, actions = self._refresh_callback(byte_swap)
+            self.device_actions = actions
+            self._update_diff(left_json, right_json)
+        except Exception as e:
+            QMessageBox.warning(self, "Refresh Error", f"Failed to re-read device: {e}")
+
+
+class ErrorDetailsDialog(QDialog):
+    """Show detailed error message with copy support."""
+
+    def __init__(self, title, message, details_text, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumSize(820, 520)
+        self._details_text = details_text
+
+        root = QVBoxLayout()
+        root.addWidget(QLabel(message))
+
+        self.details_edit = QTextEdit()
+        self.details_edit.setReadOnly(True)
+        self.details_edit.setPlainText(details_text)
+        root.addWidget(self.details_edit, 1)
+
+        button_layout = QHBoxLayout()
+        copy_btn = QPushButton("Copy Details")
+        copy_btn.clicked.connect(self.copy_details)
+        button_layout.addWidget(copy_btn)
+        button_layout.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        button_layout.addWidget(close_btn)
+        root.addLayout(button_layout)
+
+        self.setLayout(root)
+
+    def copy_details(self):
+        from PyQt5.QtWidgets import QApplication
+
+        QApplication.clipboard().setText(self._details_text)
+
+
+class DetectResultsDialog(QDialog):
+    """Show bus detect results and allow adding missing devices."""
+
+    add_requested = pyqtSignal(int)
+
+    def __init__(self, reachable, unreachable, project_nodes=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Bus Detect Results")
+        self.setMinimumSize(760, 520)
+        self._project_nodes = set(int(v) for v in (project_nodes or []))
+
+        root = QVBoxLayout()
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Slave", "Status", "In Project", "Action"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+
+        rows = []
+        for slave in reachable:
+            rows.append((int(slave), True))
+        for slave in unreachable:
+            rows.append((int(slave), False))
+        rows.sort(key=lambda item: item[0])
+        self.table.setRowCount(len(rows))
+
+        for row, (slave, is_reachable) in enumerate(rows):
+            in_project = slave in self._project_nodes
+            self.table.setItem(row, 0, QTableWidgetItem(str(slave)))
+            self.table.setItem(row, 1, QTableWidgetItem("Reachable" if is_reachable else "Not responding"))
+            self.table.setItem(row, 2, QTableWidgetItem("Yes" if in_project else "No"))
+            action_btn = QPushButton("Add device" if not in_project else "In project")
+            action_btn.setEnabled(not in_project and is_reachable)
+            action_btn.clicked.connect(lambda checked=False, s=slave: self.add_requested.emit(s))
+            self.table.setCellWidget(row, 3, action_btn)
+
+        root.addWidget(self.table)
+
+        close_row = QHBoxLayout()
+        close_row.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        close_row.addWidget(close_btn)
+        root.addLayout(close_row)
+        self.setLayout(root)
+
+
+def _json_diff_html(value, highlight="none", title="JSON"):
+    text = json.dumps(value, indent=2)
+    lines = []
+    for raw_line in text.splitlines():
+        safe = escape(raw_line)
+        if highlight == "removed":
+            safe = f'<span style="background:#3a1515;color:#ffb3b3;">{safe}</span>'
+        elif highlight == "added":
+            safe = f'<span style="background:#153a15;color:#bfffc0;">{safe}</span>'
+        lines.append(safe)
+    body = "<br>".join(lines)
+    return (
+        f"<html><body style='font-family:monospace; white-space:pre; background:#111; color:#eee;'>"
+        f"<h3 style='color:#ddd;'>{escape(title)}</h3><pre>{body}</pre></body></html>"
+    )
+
+
+def _json_side_by_side_html(left_value, right_value, left_title, right_title):
+    left_text = json.dumps(left_value, indent=2).splitlines()
+    right_text = json.dumps(right_value, indent=2).splitlines()
+
+    matcher = difflib.SequenceMatcher(None, left_text, right_text)
+    left_lines = []
+    right_lines = []
+
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for left_line, right_line in zip(left_text[i1:i2], right_text[j1:j2]):
+                left_lines.append(_line_html(left_line))
+                right_lines.append(_line_html(right_line))
+        elif tag == "replace":
+            left_chunk = left_text[i1:i2]
+            right_chunk = right_text[j1:j2]
+            max_len = max(len(left_chunk), len(right_chunk))
+            for idx in range(max_len):
+                if idx < len(left_chunk):
+                    left_lines.append(_line_html(left_chunk[idx], "removed"))
+                else:
+                    left_lines.append(_line_html("", "removed"))
+                if idx < len(right_chunk):
+                    right_lines.append(_line_html(right_chunk[idx], "added"))
+                else:
+                    right_lines.append(_line_html("", "added"))
+        elif tag == "delete":
+            for left_line in left_text[i1:i2]:
+                left_lines.append(_line_html(left_line, "removed"))
+        elif tag == "insert":
+            for right_line in right_text[j1:j2]:
+                right_lines.append(_line_html(right_line, "added"))
+
+    max_len = max(len(left_lines), len(right_lines))
+    while len(left_lines) < max_len:
+        left_lines.append(_line_html(""))
+    while len(right_lines) < max_len:
+        right_lines.append(_line_html(""))
+
+    left_body = "<br>".join(left_lines)
+    right_body = "<br>".join(right_lines)
+    return (
+        f"<html><body style='font-family:monospace; white-space:pre; background:#111; color:#eee;'>"
+        f"<h3 style='color:#ddd;'>{escape(left_title)}</h3><pre>{left_body}</pre></body></html>",
+        f"<html><body style='font-family:monospace; white-space:pre; background:#111; color:#eee;'>"
+        f"<h3 style='color:#ddd;'>{escape(right_title)}</h3><pre>{right_body}</pre></body></html>"
+    )
+
+
+def _line_html(line, state="equal"):
+    safe = escape(line)
+    if state == "removed":
+        return f'<span style="background:#3a1515;color:#ffb3b3;">{safe}</span>'
+    if state == "added":
+        return f'<span style="background:#153a15;color:#bfffc0;">{safe}</span>'
+    return safe

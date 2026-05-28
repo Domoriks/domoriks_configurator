@@ -25,7 +25,7 @@ class CCodeParser:
         pattern = r'EventAction\s+(\w+)\s*=\s*\{\s*(\w+)\s*,\s*(\w+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\};'
         
         for match in re.finditer(pattern, c_code):
-            name, action, delay_action, delay, brightness, node, output, reserved, extra_action_index = match.groups()
+            name, action, delay_action, delay, brightness, node, output, send, extra_action_index = match.groups()
             
             event_action = EventAction(
                 name=name,
@@ -35,7 +35,7 @@ class CCodeParser:
                 brightness=int(brightness),
                 node=int(node),
                 output=int(output),
-                reserved=int(reserved),
+                send=int(send),
                 extra_action_index=int(extra_action_index)
             )
             

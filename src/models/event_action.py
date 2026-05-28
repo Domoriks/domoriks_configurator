@@ -9,7 +9,7 @@ class EventAction:
     ACTION_DISPLAY = {"nop": "None", "on": "On", "off": "Off", "toggle": "Toggle"}
     
     def __init__(self, name, action="nop", delay_action="nop", delay=0, 
-                 brightness=100, node=0, output=0, reserved=0, extra_action_index=0):
+                 brightness=100, node=0, output=0, send=0, extra_action_index=0):
         self.name = name
         self.action = action
         self.delay_action = delay_action
@@ -17,7 +17,7 @@ class EventAction:
         self.brightness = brightness
         self.node = node
         self.output = output
-        self.reserved = reserved
+        self.send = send
         self.extra_action_index = extra_action_index
     
     @classmethod
@@ -30,6 +30,7 @@ class EventAction:
             brightness=data.get("brightness", 100),
             node=data.get("node", 0),
             output=data.get("output", 0),
+            send=data.get("send", data.get("reserved", 0)),
             extra_action_index=data.get("extra_action_index", 0),
         )
 
@@ -41,6 +42,7 @@ class EventAction:
             "brightness": self.brightness,
             "node": self.node,
             "output": self.output,
+            "send": self.send,
             "extra_action_index": self.extra_action_index,
         }
 
@@ -48,7 +50,7 @@ class EventAction:
         """Generate C code representation."""
         return (f"EventAction {self.name} = {{ {self.action}, {self.delay_action}, "
                 f"{self.delay}, {self.brightness}, {self.node}, {self.output}, "
-                f"{self.reserved}, {self.extra_action_index} }};")
+                f"{self.send}, {self.extra_action_index} }};")
 
     def is_empty(self):
         """Check if this is an empty/default action."""

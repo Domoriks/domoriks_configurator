@@ -13,9 +13,27 @@ from PyQt5.QtGui import QIcon
 from models.project import Project
 from models.module import Module
 from gui.module_widget import ModuleWidget
-from gui.dialogs import (CCodeImportDialog, CCodeExportDialog,
-                        ModuleDialog, ModuleEditorWidget)
+from gui.dialogs import (
+    ApiSettingsDialog,
+    BusDetectDialog,
+    CCodeImportDialog,
+    CCodeExportDialog,
+    DetectResultsDialog,
+    ErrorDetailsDialog,
+    JsonSideBySideDiffDialog,
+    ModuleDialog,
+    ModuleEditorWidget,
+)
 from utils.parser import CCodeParser
+from utils.domoriks_api import ApiError, DomoriksApiClient
+from utils.action_sync import (
+    UploadError,
+    apply_actions_to_module,
+    build_actions_snapshot,
+    diff_module_actions,
+    read_module_actions,
+    upload_changed_actions,
+)
 
 
 def resource_path(relative_path):
@@ -116,6 +134,22 @@ class MainWindow(QMainWindow):
         actions_layout.addWidget(self.module_tabs)
 
         action_btn_row = QHBoxLayout()
+        api_btn = QPushButton("API Settings")
+        api_btn.clicked.connect(self.configure_api_settings)
+        action_btn_row.addWidget(api_btn)
+
+        detect_btn = QPushButton("Detect Bus")
+        detect_btn.clicked.connect(self.detect_bus)
+        action_btn_row.addWidget(detect_btn)
+
+        load_btn = QPushButton("Download from Device")
+        load_btn.clicked.connect(self.load_device_config)
+        action_btn_row.addWidget(load_btn)
+
+        upload_btn = QPushButton("Upload to Device")
+        upload_btn.clicked.connect(self.upload_device_config)
+        action_btn_row.addWidget(upload_btn)
+
         action_btn_row.addStretch()
         actions_layout.addLayout(action_btn_row)
 
@@ -160,6 +194,11 @@ class MainWindow(QMainWindow):
         ie_menu.addSeparator()
         self._add_action(ie_menu, "Import Module (JSON)", self.import_module_json)
         self._add_action(ie_menu, "Export Module (JSON)", self.export_module_json)
+        ie_menu.addSeparator()
+        self._add_action(ie_menu, "API Settings...", self.configure_api_settings)
+        self._add_action(ie_menu, "Detect Bus...", self.detect_bus)
+        self._add_action(ie_menu, "Download from Device...", self.load_device_config)
+        self._add_action(ie_menu, "Upload to Device...", self.upload_device_config)
 
         help_menu = menubar.addMenu("Help")
         self._add_action(help_menu, "About", self.show_about)
@@ -470,7 +509,10 @@ class MainWindow(QMainWindow):
         """Save the current project."""
         if self.current_file:
             try:
-                self.project.save_to_file(self.current_file)
+                self.project.save_to_file(
+                    self.current_file,
+                    preserve_existing_token=self.project.api_token_session_only,
+                )
                 self._mark_saved()
                 self.statusBar().showMessage(f"Saved: {self.current_file}")
             except Exception as e:
@@ -486,7 +528,10 @@ class MainWindow(QMainWindow):
         )
         if filepath:
             try:
-                self.project.save_to_file(filepath)
+                self.project.save_to_file(
+                    filepath,
+                    preserve_existing_token=self.project.api_token_session_only,
+                )
                 self.current_file = filepath
                 self._mark_saved()
                 self.statusBar().showMessage(f"Saved: {filepath}")
@@ -643,6 +688,181 @@ class MainWindow(QMainWindow):
                 self.statusBar().showMessage(f"Imported module: {module.name}")
             except Exception as e:
                 QMessageBox.critical(self, "Import Error", f"Failed to import module: {e}")
+
+    def _get_api_client(self, byte_swap=None):
+        if not self.project.api_base_url:
+            raise ValueError("API base URL not configured")
+        if not self.project.api_token:
+            raise ValueError("API token not configured")
+        client = DomoriksApiClient(self.project.api_base_url, self.project.api_token)
+        client.byte_swap = byte_swap
+        return client
+
+    def configure_api_settings(self):
+        dialog = ApiSettingsDialog(
+            base_url=self.project.api_base_url,
+            token=self.project.api_token,
+            token_session_only=self.project.api_token_session_only,
+            parent=self,
+        )
+        if dialog.exec_() == QDialog.Accepted:
+            settings = dialog.get_settings()
+            self.project.api_base_url = settings["base_url"]
+            if settings["token"]:
+                self.project.api_token = settings["token"]
+            elif not settings["token_session_only"]:
+                self.project.api_token = ""
+            self.project.api_token_session_only = settings["token_session_only"]
+            self.on_module_modified()
+            self.statusBar().showMessage("API settings updated")
+
+    def detect_bus(self):
+        dialog = BusDetectDialog(self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        try:
+            client = self._get_api_client()
+            values = dialog.get_values()
+            result = client.detect_range(values["start_slave"], values["end_slave"], values["timeout"])
+            reachable = result.get("reachable", [])
+            unreachable = result.get("unreachable", [])
+            project_nodes = [module.node for module in self.project.modules]
+            results_dialog = DetectResultsDialog(reachable, unreachable, project_nodes, self)
+            results_dialog.add_requested.connect(self._add_detected_device)
+            results_dialog.exec_()
+        except Exception as e:
+            QMessageBox.critical(self, "Detect Error", f"Failed to detect bus: {e}")
+
+    def _add_detected_device(self, slave):
+        if any(module.node == slave for module in self.project.modules):
+            QMessageBox.information(self, "Already in Project", f"Device {slave} already exists in project.")
+            return
+
+        dialog = ModuleDialog(parent=self)
+        dialog.name_edit.setText(f"Device {slave}")
+        dialog.inputs_spin.setValue(4)
+        dialog.extras_spin.setValue(20)
+        dialog.outputs_spin.setValue(0)
+        dialog.node_spin.setValue(slave)
+        if dialog.exec_() == QDialog.Accepted:
+            config = dialog.get_module_config()
+            module = Module(
+                name=config["name"],
+                num_inputs=config["num_inputs"],
+                num_extra_actions=config["num_extra_actions"],
+                num_outputs=config.get("num_outputs", 0),
+                node=config.get("node", slave),
+            )
+            self.project.add_module(module)
+            if module.num_inputs > 0:
+                self.add_module_tab(module)
+            self.refresh_module_list()
+            self.on_module_modified()
+            self.statusBar().showMessage(f"Added detected device: {module.name}")
+
+    def _current_selected_module(self):
+        current = self.module_tabs.currentWidget()
+        if current and hasattr(current, "module"):
+            return current.module
+        item = self.modules_list.currentItem()
+        if item:
+            return next((m for m in self.project.modules if m.name == item.text()), None)
+        return None
+
+    def load_device_config(self):
+        module = self._current_selected_module()
+        if not module:
+            QMessageBox.information(self, "No Module", "No module selected.")
+            return
+
+        try:
+            client = self._get_api_client()
+            device_actions = read_module_actions(client, module, timeout=2.0)
+            remote_snapshot = build_actions_snapshot(module, device_actions)
+            local_snapshot = build_actions_snapshot(module)
+
+            def refresh_cb(byte_swap_override):
+                c = self._get_api_client(byte_swap=byte_swap_override)
+                actions = read_module_actions(c, module, timeout=2.0)
+                return local_snapshot, build_actions_snapshot(module, actions), actions
+
+            diff_dialog = JsonSideBySideDiffDialog(
+                "Local project JSON",
+                "Device JSON",
+                local_snapshot,
+                remote_snapshot,
+                self,
+                refresh_callback=refresh_cb,
+            )
+            if diff_dialog.exec_() == QDialog.Accepted:
+                final_actions = diff_dialog.device_actions or device_actions
+                apply_actions_to_module(module, final_actions)
+                self.on_module_modified()
+                self.statusBar().showMessage(f"Loaded device config for {module.name}")
+        except Exception as e:
+            QMessageBox.critical(self, "Load Error", f"Failed to load device config: {e}")
+
+    def upload_device_config(self):
+        module = self._current_selected_module()
+        if not module:
+            QMessageBox.information(self, "No Module", "No module selected.")
+            return
+
+        try:
+            client = self._get_api_client()
+            device_actions = read_module_actions(client, module, timeout=2.0)
+            changed_steps = diff_module_actions(module, device_actions)
+            if not changed_steps:
+                QMessageBox.information(self, "No Changes", f"No action differences for {module.name}.")
+                return
+
+            local_snapshot = build_actions_snapshot(module)
+            remote_snapshot = build_actions_snapshot(module, device_actions)
+
+            def refresh_cb(byte_swap_override):
+                c = self._get_api_client(byte_swap=byte_swap_override)
+                actions = read_module_actions(c, module, timeout=2.0)
+                return build_actions_snapshot(module, actions), local_snapshot, actions
+
+            diff_dialog = JsonSideBySideDiffDialog(
+                "Device JSON",
+                "Local project JSON",
+                remote_snapshot,
+                local_snapshot,
+                self,
+                refresh_callback=refresh_cb,
+            )
+            if diff_dialog.exec_() != QDialog.Accepted:
+                return
+
+            final_actions = diff_dialog.device_actions or device_actions
+            final_changed = diff_module_actions(module, final_actions)
+            if not final_changed:
+                QMessageBox.information(self, "No Changes", f"No action differences for {module.name}.")
+                return
+            upload_changed_actions(client, module, final_changed, timeout=2.0)
+            self.statusBar().showMessage(f"Uploaded {len(final_changed)} changed actions to {module.name}")
+        except UploadError as e:
+            self._show_upload_failure(e)
+        except Exception as e:
+            QMessageBox.critical(self, "Upload Error", f"Failed to upload device config: {e}")
+
+    def _show_upload_failure(self, error):
+        details = error.details if hasattr(error, "details") else {"error": str(error)}
+        try:
+            import json
+
+            details_text = json.dumps(details, indent=2, sort_keys=True, default=str)
+        except Exception:
+            details_text = "\n".join(f"{key}: {value}" for key, value in details.items())
+        dialog = ErrorDetailsDialog(
+            "Upload Failed",
+            "Upload stopped. Power-cycle or restart the failed device, then retry.",
+            details_text,
+            self,
+        )
+        dialog.exec_()
 
     def export_module_json(self):
         """Export the selected module to a JSON file."""

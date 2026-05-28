@@ -11,6 +11,9 @@ class Project:
     def __init__(self, name="Untitled Project"):
         self.name = name
         self.modules = []
+        self.api_base_url = ""
+        self.api_token = ""
+        self.api_token_session_only = False
         self.modified = False
 
     def add_module(self, module):
@@ -38,20 +41,46 @@ class Project:
         return errors
 
     def to_dict(self):
-        return {
+        data = {
             "name": self.name,
-            "modules": [module.to_dict() for module in self.modules]
+            "modules": [module.to_dict() for module in self.modules],
         }
+        data["api"] = {
+            "base_url": self.api_base_url,
+            "token": self.api_token,
+            "token_session_only": self.api_token_session_only,
+        }
+        return data
 
-    def save_to_file(self, filepath):
+    def save_to_file(self, filepath, preserve_existing_token=False):
+        data = self.to_dict()
+        if preserve_existing_token:
+            data.setdefault("api", {})["token"] = ""
+            try:
+                with open(filepath, 'r') as f:
+                    existing = json.load(f)
+                existing_api = existing.get("api", {}) if isinstance(existing.get("api", {}), dict) else {}
+                existing_token = existing_api.get("token", "")
+                if existing_token:
+                    data.setdefault("api", {})["token"] = existing_token
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
+
         with open(filepath, 'w') as f:
-            json.dump(self.to_dict(), f, indent=2)
+            json.dump(data, f, indent=2)
         self.modified = False
 
     @classmethod
     def from_dict(cls, data):
         project = cls(name=data.get("name", "Untitled Project"))
         legacy_light_points = data.get("light_points", {})
+
+        api_data = data.get("api", {}) if isinstance(data.get("api", {}), dict) else {}
+        project.api_base_url = api_data.get("base_url", "") or ""
+        project.api_token = api_data.get("token", "") or ""
+        project.api_token_session_only = bool(api_data.get("token_session_only", False))
 
         # Support both "modules" and legacy "devices" key
         modules_data = data.get("modules", data.get("devices", []))
