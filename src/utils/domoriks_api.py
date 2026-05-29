@@ -134,6 +134,34 @@ class DomoriksApiClient:
 
         return exchange
 
+    def write_single_register(self, slave: int, address: int, value: int, timeout: float) -> RawExchange:
+        payload = struct.pack(">HH", int(address) & 0xFFFF, int(value) & 0xFFFF)
+        frame = _encode_modbus_rtu_frame(int(slave), 0x06, payload)
+        exchange = self.raw(frame.hex(), timeout)
+
+        response = exchange.response.get("response")
+        if response is None:
+            raise ApiError("No Modbus response received", {
+                "request_json": exchange.request,
+                "response_json": exchange.response,
+            })
+
+        function = int(response.get("function", 0))
+        if function & 0x80:
+            raise ApiError("Modbus exception during write single register", {
+                "request_json": exchange.request,
+                "response_json": exchange.response,
+                "exception_code": response.get("exception_code"),
+            })
+
+        if function != 0x06:
+            raise ApiError("Unexpected Modbus function in write single register response", {
+                "request_json": exchange.request,
+                "response_json": exchange.response,
+            })
+
+        return exchange
+
     def _post_json(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         if not self.base_url:
             raise ApiError("Base URL is not configured")

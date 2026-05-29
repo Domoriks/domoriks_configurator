@@ -6,8 +6,9 @@ import os
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QTabWidget, QPushButton, QMessageBox, QFileDialog,
                              QAction, QLabel, QDialog, QToolBar, QListWidget,
-                             QStackedWidget, QSizePolicy, QLineEdit)
-from PyQt5.QtCore import QTimer
+                             QStackedWidget, QSizePolicy, QLineEdit,
+                             QProgressDialog, QInputDialog, QComboBox)
+from PyQt5.QtCore import QTimer, QThread, pyqtSignal
 from PyQt5.QtGui import QIcon
 
 from models.project import Project
@@ -26,6 +27,7 @@ from gui.dialogs import (
 )
 from utils.parser import CCodeParser
 from utils.domoriks_api import ApiError, DomoriksApiClient
+from utils.domoriks_serial import DomoriksSerialClient, find_stlink_vcp_port, list_serial_ports
 from utils.action_sync import (
     UploadError,
     apply_actions_to_module,
@@ -41,6 +43,64 @@ def resource_path(relative_path):
     if hasattr(sys, "_MEIPASS"):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.abspath("."), relative_path)
+
+
+class _DetectWorker(QThread):
+    """Run bus detection in a background thread."""
+    finished = pyqtSignal(object)  # dict result or Exception
+    progress = pyqtSignal(int)  # current slave being scanned
+
+    def __init__(self, client, start_slave, end_slave, timeout):
+        super().__init__()
+        self._client = client
+        self._start = start_slave
+        self._end = end_slave
+        self._timeout = timeout
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            reachable = []
+            unreachable = []
+            for slave in range(self._start, self._end + 1):
+                if self._cancelled:
+                    break
+                if self._client._ping_slave(slave, self._timeout):
+                    reachable.append(slave)
+                else:
+                    unreachable.append(slave)
+                    # If opening the COM port timed out, remaining pings will fail too.
+                    if getattr(self._client, "_last_open_timeout_error", False):
+                        remaining_start = slave + 1
+                        if remaining_start <= self._end:
+                            unreachable.extend(range(remaining_start, self._end + 1))
+                        self.progress.emit(self._end)
+                        break
+                self.progress.emit(slave)
+            self.finished.emit({"reachable": reachable, "unreachable": unreachable})
+        except Exception as e:
+            self.finished.emit(e)
+
+
+class _TaskWorker(QThread):
+    """Run an arbitrary callable in a background thread."""
+    finished = pyqtSignal(object)  # result or Exception
+
+    def __init__(self, fn, *args, **kwargs):
+        super().__init__()
+        self._fn = fn
+        self._args = args
+        self._kwargs = kwargs
+
+    def run(self):
+        try:
+            result = self._fn(*self._args, **self._kwargs)
+            self.finished.emit(result)
+        except Exception as e:
+            self.finished.emit(e)
 
 
 class MainWindow(QMainWindow):
@@ -86,7 +146,7 @@ class MainWindow(QMainWindow):
         name_layout.addStretch()
         layout.addLayout(name_layout)
 
-        # Main stacked area: Devices overview (index 0) and Actions view (index 1)
+        # Main stacked area: Devices overview (index 0), Actions (index 1), Device ID (index 2)
         self.main_stack = QStackedWidget()
 
         # --- Devices overview page ---
@@ -134,7 +194,7 @@ class MainWindow(QMainWindow):
         actions_layout.addWidget(self.module_tabs)
 
         action_btn_row = QHBoxLayout()
-        api_btn = QPushButton("API Settings")
+        api_btn = QPushButton("Connection Settings")
         api_btn.clicked.connect(self.configure_api_settings)
         action_btn_row.addWidget(api_btn)
 
@@ -155,6 +215,37 @@ class MainWindow(QMainWindow):
 
         actions_page.setLayout(actions_layout)
         self.main_stack.addWidget(actions_page)
+
+        # --- Device ID page ---
+        device_id_page = QWidget()
+        device_id_layout = QVBoxLayout()
+
+        device_id_layout.addWidget(QLabel("Vendor-specific method: write holding register 0x0031 (range 1-247)."))
+
+        select_row = QHBoxLayout()
+        select_row.addWidget(QLabel("Detected Device:"))
+        self.device_id_detected_combo = QComboBox()
+        self.device_id_detected_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        select_row.addWidget(self.device_id_detected_combo)
+        detect_btn = QPushButton("Detect")
+        detect_btn.clicked.connect(self.detect_bus_for_device_id)
+        select_row.addWidget(detect_btn)
+        device_id_layout.addLayout(select_row)
+
+        self.device_id_status_label = QLabel("Run Detect to list reachable devices.")
+        device_id_layout.addWidget(self.device_id_status_label)
+
+        id_btn_row = QHBoxLayout()
+        set_id_btn = QPushButton("Set Device ID")
+        set_id_btn.clicked.connect(self.set_device_id)
+        id_btn_row.addWidget(set_id_btn)
+        id_btn_row.addStretch()
+        device_id_layout.addLayout(id_btn_row)
+        device_id_layout.addStretch()
+
+        device_id_page.setLayout(device_id_layout)
+        self.main_stack.addWidget(device_id_page)
+        self._device_id_reachable = []
 
         layout.addWidget(self.main_stack)
         central_widget.setLayout(layout)
@@ -195,8 +286,9 @@ class MainWindow(QMainWindow):
         self._add_action(ie_menu, "Import Module (JSON)", self.import_module_json)
         self._add_action(ie_menu, "Export Module (JSON)", self.export_module_json)
         ie_menu.addSeparator()
-        self._add_action(ie_menu, "API Settings...", self.configure_api_settings)
+        self._add_action(ie_menu, "Connection Settings...", self.configure_api_settings)
         self._add_action(ie_menu, "Detect Bus...", self.detect_bus)
+        self._add_action(ie_menu, "Set Device ID...", self.set_device_id)
         self._add_action(ie_menu, "Download from Device...", self.load_device_config)
         self._add_action(ie_menu, "Upload to Device...", self.upload_device_config)
 
@@ -221,6 +313,12 @@ class MainWindow(QMainWindow):
         actions_action.triggered.connect(self.switch_to_actions)
         toolbar.addAction(actions_action)
         self._actions_toolbar_action = actions_action
+
+        device_id_action = QAction("Device ID", self)
+        device_id_action.setCheckable(True)
+        device_id_action.triggered.connect(self.switch_to_device_id)
+        toolbar.addAction(device_id_action)
+        self._device_id_toolbar_action = device_id_action
 
         self._update_toolbar_state()
     
@@ -275,6 +373,8 @@ class MainWindow(QMainWindow):
                 self._modules_toolbar_action.setChecked(True)
             if hasattr(self, '_actions_toolbar_action'):
                 self._actions_toolbar_action.setChecked(False)
+            if hasattr(self, '_device_id_toolbar_action'):
+                self._device_id_toolbar_action.setChecked(False)
         except Exception:
             pass
         self.refresh_module_list()
@@ -301,6 +401,25 @@ class MainWindow(QMainWindow):
                 self._modules_toolbar_action.setChecked(False)
             if hasattr(self, '_actions_toolbar_action'):
                 self._actions_toolbar_action.setChecked(True)
+            if hasattr(self, '_device_id_toolbar_action'):
+                self._device_id_toolbar_action.setChecked(False)
+        except Exception:
+            pass
+        self._update_toolbar_state()
+
+    def switch_to_device_id(self):
+        """Show the device-id update page."""
+        try:
+            self.main_stack.setCurrentIndex(2)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, '_modules_toolbar_action'):
+                self._modules_toolbar_action.setChecked(False)
+            if hasattr(self, '_actions_toolbar_action'):
+                self._actions_toolbar_action.setChecked(False)
+            if hasattr(self, '_device_id_toolbar_action'):
+                self._device_id_toolbar_action.setChecked(True)
         except Exception:
             pass
         self._update_toolbar_state()
@@ -332,6 +451,101 @@ class MainWindow(QMainWindow):
                 pass
         except Exception:
             pass
+
+    def _set_detected_device_ids(self, reachable_ids):
+        if not hasattr(self, 'device_id_detected_combo'):
+            return
+        combo = self.device_id_detected_combo
+        current = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        for slave in reachable_ids:
+            combo.addItem(f"Device {slave}", int(slave))
+        if combo.count() > 0:
+            idx = combo.findData(current)
+            combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
+    def detect_bus_for_device_id(self):
+        dialog = BusDetectDialog(self)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        try:
+            client = self._get_api_client()
+            values = dialog.get_values()
+        except Exception as e:
+            QMessageBox.critical(self, "Detect Error", f"Failed to detect bus: {e}")
+            return
+
+        start_slave = values["start_slave"]
+        end_slave = values["end_slave"]
+        timeout = values["timeout"]
+
+        def apply_detect_result(result):
+            reachable = sorted(int(v) for v in result.get("reachable", []))
+            self._device_id_reachable = list(reachable)
+            self._set_detected_device_ids(reachable)
+            if reachable:
+                self.device_id_status_label.setText(f"Reachable IDs: {', '.join(str(v) for v in reachable)}")
+            else:
+                self.device_id_status_label.setText("No reachable devices in selected range.")
+
+        # Use threaded detection for serial (iterates per-slave), blocking for API.
+        if hasattr(client, '_ping_slave'):
+            total = end_slave - start_slave + 1
+            progress = QProgressDialog(
+                f"Scanning slaves {start_slave}\u2013{end_slave}...",
+                "Cancel", 0, total, self
+            )
+            progress.setWindowTitle("Detecting Bus")
+            progress.setMinimumDuration(0)
+            progress.setValue(0)
+
+            self._detect_worker = _DetectWorker(client, start_slave, end_slave, timeout)
+            self._detect_progress = progress
+
+            def on_progress(slave):
+                done = slave - start_slave + 1
+                progress.setValue(done)
+                progress.setLabelText(f"Scanned slave {slave} ({done}/{total})")
+
+            def on_finished(result):
+                try:
+                    progress.canceled.disconnect(on_cancelled)
+                except Exception:
+                    pass
+                progress.close()
+                self._detect_worker.deleteLater()
+                self._close_client(client)
+                self._detect_worker = None
+                self._detect_progress = None
+                if self._detect_cancelled:
+                    return
+                if isinstance(result, Exception):
+                    QMessageBox.critical(self, "Detect Error", f"Failed to detect bus: {result}")
+                    return
+                apply_detect_result(result)
+
+            def on_cancelled():
+                self._detect_cancelled = True
+                if self._detect_worker is not None:
+                    self._detect_worker.cancel()
+                progress.close()
+
+            self._detect_cancelled = False
+            self._detect_worker.progress.connect(on_progress)
+            self._detect_worker.finished.connect(on_finished)
+            progress.canceled.connect(on_cancelled)
+            self._detect_worker.start()
+        else:
+            try:
+                result = client.detect_range(start_slave, end_slave, timeout)
+                apply_detect_result(result)
+            except Exception as e:
+                QMessageBox.critical(self, "Detect Error", f"Failed to detect bus: {e}")
+            finally:
+                self._close_client(client)
 
     def _on_module_double_clicked(self, item):
         self.edit_selected_module()
@@ -689,32 +903,68 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(self, "Import Error", f"Failed to import module: {e}")
 
-    def _get_api_client(self, byte_swap=None):
-        if not self.project.api_base_url:
-            raise ValueError("API base URL not configured")
-        if not self.project.api_token:
-            raise ValueError("API token not configured")
-        client = DomoriksApiClient(self.project.api_base_url, self.project.api_token)
-        client.byte_swap = byte_swap
-        return client
+    def _get_api_client(self):
+        if self.project.connection_mode == "serial":
+            serial_port = self.project.serial_port
+            available_ports = list_serial_ports()
+
+            # Handle stale saved COM ports (e.g., adapter re-enumerated after reinstall).
+            if serial_port and serial_port not in available_ports:
+                fallback_port = find_stlink_vcp_port()
+                if fallback_port and fallback_port in available_ports:
+                    serial_port = fallback_port
+                    self.project.serial_port = fallback_port
+                else:
+                    ports_text = ", ".join(available_ports) if available_ports else "none"
+                    raise ValueError(
+                        f"Configured serial port '{self.project.serial_port}' is not available. "
+                        f"Available ports: {ports_text}"
+                    )
+
+            if not serial_port:
+                serial_port = find_stlink_vcp_port()
+                if serial_port:
+                    self.project.serial_port = serial_port
+            if not serial_port:
+                raise ValueError("Serial port not configured and no ST-Link VCP found")
+
+            return DomoriksSerialClient(serial_port)
+        else:
+            if not self.project.api_base_url:
+                raise ValueError("API base URL not configured")
+            if not self.project.api_token:
+                raise ValueError("API token not configured")
+            return DomoriksApiClient(self.project.api_base_url, self.project.api_token)
+
+    def _close_client(self, client):
+        close_fn = getattr(client, "close", None)
+        if callable(close_fn):
+            try:
+                close_fn()
+            except Exception:
+                pass
 
     def configure_api_settings(self):
         dialog = ApiSettingsDialog(
             base_url=self.project.api_base_url,
             token=self.project.api_token,
             token_session_only=self.project.api_token_session_only,
+            connection_mode=self.project.connection_mode,
+            serial_port=self.project.serial_port,
             parent=self,
         )
         if dialog.exec_() == QDialog.Accepted:
             settings = dialog.get_settings()
+            self.project.connection_mode = settings["connection_mode"]
             self.project.api_base_url = settings["base_url"]
             if settings["token"]:
                 self.project.api_token = settings["token"]
             elif not settings["token_session_only"]:
                 self.project.api_token = ""
             self.project.api_token_session_only = settings["token_session_only"]
+            self.project.serial_port = settings["serial_port"]
             self.on_module_modified()
-            self.statusBar().showMessage("API settings updated")
+            self.statusBar().showMessage("Connection settings updated")
 
     def detect_bus(self):
         dialog = BusDetectDialog(self)
@@ -724,15 +974,147 @@ class MainWindow(QMainWindow):
         try:
             client = self._get_api_client()
             values = dialog.get_values()
-            result = client.detect_range(values["start_slave"], values["end_slave"], values["timeout"])
-            reachable = result.get("reachable", [])
-            unreachable = result.get("unreachable", [])
-            project_nodes = [module.node for module in self.project.modules]
-            results_dialog = DetectResultsDialog(reachable, unreachable, project_nodes, self)
-            results_dialog.add_requested.connect(self._add_detected_device)
-            results_dialog.exec_()
         except Exception as e:
             QMessageBox.critical(self, "Detect Error", f"Failed to detect bus: {e}")
+            return
+
+        start_slave = values["start_slave"]
+        end_slave = values["end_slave"]
+        timeout = values["timeout"]
+
+        # Use threaded detection for serial (iterates per-slave), blocking for API
+        if hasattr(client, '_ping_slave'):
+            total = end_slave - start_slave + 1
+            progress = QProgressDialog(
+                f"Scanning slaves {start_slave}–{end_slave}...",
+                "Cancel", 0, total, self
+            )
+            progress.setWindowTitle("Detecting Bus")
+            progress.setMinimumDuration(0)
+            progress.setValue(0)
+
+            self._detect_worker = _DetectWorker(client, start_slave, end_slave, timeout)
+            self._detect_progress = progress
+
+            def on_progress(slave):
+                done = slave - start_slave + 1
+                progress.setValue(done)
+                progress.setLabelText(f"Scanned slave {slave} ({done}/{total})")
+
+            def on_finished(result):
+                # Prevent programmatic close from invoking cancel handler.
+                try:
+                    progress.canceled.disconnect(on_cancelled)
+                except Exception:
+                    pass
+                progress.close()
+                self._detect_worker.deleteLater()
+                self._close_client(client)
+                self._detect_worker = None
+                self._detect_progress = None
+                if self._detect_cancelled:
+                    return
+                if isinstance(result, Exception):
+                    QMessageBox.critical(self, "Detect Error", f"Failed to detect bus: {result}")
+                    return
+                self._show_detect_results(result)
+
+            def on_cancelled():
+                self._detect_cancelled = True
+                if self._detect_worker is not None:
+                    self._detect_worker.cancel()
+                progress.close()
+
+            self._detect_cancelled = False
+            self._detect_worker.progress.connect(on_progress)
+            self._detect_worker.finished.connect(on_finished)
+            progress.canceled.connect(on_cancelled)
+            self._detect_worker.start()
+        else:
+            try:
+                result = client.detect_range(start_slave, end_slave, timeout)
+                self._show_detect_results(result)
+            except Exception as e:
+                QMessageBox.critical(self, "Detect Error", f"Failed to detect bus: {e}")
+            finally:
+                self._close_client(client)
+
+    def _show_detect_results(self, result):
+        reachable = result.get("reachable", [])
+        unreachable = result.get("unreachable", [])
+        project_nodes = [module.node for module in self.project.modules]
+        results_dialog = DetectResultsDialog(reachable, unreachable, project_nodes, self)
+        results_dialog.add_requested.connect(self._add_detected_device)
+        results_dialog.delete_requested.connect(self._delete_detected_device)
+        results_dialog.exec_()
+
+    def set_device_id(self):
+        if not hasattr(self, 'device_id_detected_combo'):
+            QMessageBox.information(self, "No Device", "Device selector is not available.")
+            return
+
+        current_id = self.device_id_detected_combo.currentData()
+        if current_id is None:
+            QMessageBox.information(self, "No Device", "No detected device selected. Run Detect first.")
+            return
+
+        current_id = int(current_id)
+        new_id, ok = QInputDialog.getInt(
+            self,
+            "Set Device ID",
+            f"New Device ID for device {current_id} (1-247):",
+            current_id,
+            1,
+            247,
+            1,
+        )
+        if not ok:
+            return
+        if new_id == current_id:
+            return
+
+        if int(new_id) in set(int(v) for v in self._device_id_reachable):
+            QMessageBox.warning(
+                self,
+                "ID Already In Use",
+                f"Device ID {new_id} already responds on the bus.",
+            )
+            return
+
+        try:
+            client = self._get_api_client()
+        except Exception as e:
+            QMessageBox.critical(self, "Set Device ID Error", f"Failed to connect: {e}")
+            return
+
+        try:
+            # Vendor-specific method: holding register 0x0031 updates Modbus ID.
+            if hasattr(client, "write_single_register"):
+                client.write_single_register(current_id, 0x0031, int(new_id), timeout=2.0)
+            else:
+                client.write_multiple_registers(current_id, 0x0031, [int(new_id)], timeout=2.0)
+        except Exception as e:
+            QMessageBox.critical(self, "Set Device ID Error", f"Failed to set device ID: {e}")
+            return
+        finally:
+            self._close_client(client)
+
+        # Keep detected list in sync after successful ID change.
+        self._device_id_reachable = [int(new_id) if int(v) == int(current_id) else int(v) for v in self._device_id_reachable]
+        self._device_id_reachable = sorted(set(self._device_id_reachable))
+        self._set_detected_device_ids(self._device_id_reachable)
+        idx = self.device_id_detected_combo.findData(int(new_id))
+        if idx >= 0:
+            self.device_id_detected_combo.setCurrentIndex(idx)
+        if self._device_id_reachable:
+            self.device_id_status_label.setText(f"Reachable IDs: {', '.join(str(v) for v in self._device_id_reachable)}")
+
+        self.statusBar().showMessage(f"Updated device ID on bus: {current_id} -> {new_id}")
+        QMessageBox.information(
+            self,
+            "Device ID Updated",
+            f"Device ID changed from {current_id} to {new_id}.\nUse the new ID for future commands.",
+        )
 
     def _add_detected_device(self, slave):
         if any(module.node == slave for module in self.project.modules):
@@ -761,6 +1143,34 @@ class MainWindow(QMainWindow):
             self.on_module_modified()
             self.statusBar().showMessage(f"Added detected device: {module.name}")
 
+    def _delete_detected_device(self, slave):
+        module = next((m for m in self.project.modules if int(m.node) == int(slave)), None)
+        if not module:
+            QMessageBox.information(self, "Not In Project", f"Device {slave} is not in the project.")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Delete From Project",
+            f"Remove module '{module.name}' (node {slave}) from project?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        idx = self.find_module_tab_index(module)
+        if idx != -1:
+            self.module_tabs.removeTab(idx)
+
+        try:
+            self.project.modules.remove(module)
+        except ValueError:
+            pass
+
+        self.on_module_modified()
+        self.refresh_module_list()
+        self.statusBar().showMessage(f"Removed detected device from project: {module.name}")
+
     def _current_selected_module(self):
         current = self.module_tabs.currentWidget()
         if current and hasattr(current, "module"):
@@ -778,30 +1188,49 @@ class MainWindow(QMainWindow):
 
         try:
             client = self._get_api_client()
-            device_actions = read_module_actions(client, module, timeout=2.0)
-            remote_snapshot = build_actions_snapshot(module, device_actions)
-            local_snapshot = build_actions_snapshot(module)
-
-            def refresh_cb(byte_swap_override):
-                c = self._get_api_client(byte_swap=byte_swap_override)
-                actions = read_module_actions(c, module, timeout=2.0)
-                return local_snapshot, build_actions_snapshot(module, actions), actions
-
-            diff_dialog = JsonSideBySideDiffDialog(
-                "Local project JSON",
-                "Device JSON",
-                local_snapshot,
-                remote_snapshot,
-                self,
-                refresh_callback=refresh_cb,
-            )
-            if diff_dialog.exec_() == QDialog.Accepted:
-                final_actions = diff_dialog.device_actions or device_actions
-                apply_actions_to_module(module, final_actions)
-                self.on_module_modified()
-                self.statusBar().showMessage(f"Loaded device config for {module.name}")
         except Exception as e:
             QMessageBox.critical(self, "Load Error", f"Failed to load device config: {e}")
+            return
+
+        progress = QProgressDialog("Reading device actions...", None, 0, 0, self)
+        progress.setWindowTitle("Download from Device")
+        progress.setMinimumDuration(0)
+        progress.setCancelButton(None)
+        progress.show()
+
+        def do_read():
+            return read_module_actions(client, module, timeout=2.0)
+
+        worker = _TaskWorker(do_read)
+
+        def on_finished(result):
+            progress.close()
+            worker.deleteLater()
+            self._close_client(client)
+            if isinstance(result, Exception):
+                QMessageBox.critical(self, "Load Error", f"Failed to load device config: {result}")
+                return
+            self._show_download_diff(module, result)
+
+        worker.finished.connect(on_finished)
+        worker.start()
+
+    def _show_download_diff(self, module, device_actions):
+        remote_snapshot = build_actions_snapshot(module, device_actions)
+        local_snapshot = build_actions_snapshot(module)
+
+        diff_dialog = JsonSideBySideDiffDialog(
+            "Local project JSON",
+            "Device JSON",
+            local_snapshot,
+            remote_snapshot,
+            self,
+        )
+        if diff_dialog.exec_() == QDialog.Accepted:
+            final_actions = diff_dialog.device_actions or device_actions
+            apply_actions_to_module(module, final_actions)
+            self.on_module_modified()
+            self.statusBar().showMessage(f"Loaded device config for {module.name}")
 
     def upload_device_config(self):
         module = self._current_selected_module()
@@ -811,42 +1240,88 @@ class MainWindow(QMainWindow):
 
         try:
             client = self._get_api_client()
-            device_actions = read_module_actions(client, module, timeout=2.0)
-            changed_steps = diff_module_actions(module, device_actions)
-            if not changed_steps:
-                QMessageBox.information(self, "No Changes", f"No action differences for {module.name}.")
-                return
-
-            local_snapshot = build_actions_snapshot(module)
-            remote_snapshot = build_actions_snapshot(module, device_actions)
-
-            def refresh_cb(byte_swap_override):
-                c = self._get_api_client(byte_swap=byte_swap_override)
-                actions = read_module_actions(c, module, timeout=2.0)
-                return build_actions_snapshot(module, actions), local_snapshot, actions
-
-            diff_dialog = JsonSideBySideDiffDialog(
-                "Device JSON",
-                "Local project JSON",
-                remote_snapshot,
-                local_snapshot,
-                self,
-                refresh_callback=refresh_cb,
-            )
-            if diff_dialog.exec_() != QDialog.Accepted:
-                return
-
-            final_actions = diff_dialog.device_actions or device_actions
-            final_changed = diff_module_actions(module, final_actions)
-            if not final_changed:
-                QMessageBox.information(self, "No Changes", f"No action differences for {module.name}.")
-                return
-            upload_changed_actions(client, module, final_changed, timeout=2.0)
-            self.statusBar().showMessage(f"Uploaded {len(final_changed)} changed actions to {module.name}")
-        except UploadError as e:
-            self._show_upload_failure(e)
         except Exception as e:
             QMessageBox.critical(self, "Upload Error", f"Failed to upload device config: {e}")
+            return
+
+        progress = QProgressDialog("Reading device actions...", None, 0, 0, self)
+        progress.setWindowTitle("Upload to Device")
+        progress.setMinimumDuration(0)
+        progress.setCancelButton(None)
+        progress.show()
+
+        def do_read():
+            return read_module_actions(client, module, timeout=2.0)
+
+        worker = _TaskWorker(do_read)
+
+        def on_finished(result):
+            progress.close()
+            worker.deleteLater()
+            self._close_client(client)
+            if isinstance(result, Exception):
+                QMessageBox.critical(self, "Upload Error", f"Failed to upload device config: {result}")
+                return
+            self._show_upload_diff(module, result)
+
+        worker.finished.connect(on_finished)
+        worker.start()
+
+    def _show_upload_diff(self, module, device_actions):
+        changed_steps = diff_module_actions(module, device_actions)
+        if not changed_steps:
+            QMessageBox.information(self, "No Changes", f"No action differences for {module.name}.")
+            return
+
+        local_snapshot = build_actions_snapshot(module)
+        remote_snapshot = build_actions_snapshot(module, device_actions)
+
+        diff_dialog = JsonSideBySideDiffDialog(
+            "Device JSON",
+            "Local project JSON",
+            remote_snapshot,
+            local_snapshot,
+            self,
+        )
+        if diff_dialog.exec_() != QDialog.Accepted:
+            return
+
+        final_actions = diff_dialog.device_actions or device_actions
+        final_changed = diff_module_actions(module, final_actions)
+        if not final_changed:
+            QMessageBox.information(self, "No Changes", f"No action differences for {module.name}.")
+            return
+
+        # Upload in background thread
+        progress = QProgressDialog("Uploading actions...", None, 0, 0, self)
+        progress.setWindowTitle("Upload to Device")
+        progress.setMinimumDuration(0)
+        progress.setCancelButton(None)
+        progress.show()
+
+        def do_upload():
+            c = self._get_api_client()
+            try:
+                upload_changed_actions(c, module, final_changed, timeout=2.0)
+                return len(final_changed)
+            finally:
+                self._close_client(c)
+
+        worker = _TaskWorker(do_upload)
+
+        def on_upload_finished(result):
+            progress.close()
+            worker.deleteLater()
+            if isinstance(result, Exception):
+                if isinstance(result, UploadError):
+                    self._show_upload_failure(result)
+                else:
+                    QMessageBox.critical(self, "Upload Error", f"Failed to upload device config: {result}")
+                return
+            self.statusBar().showMessage(f"Uploaded {result} changed actions to {module.name}")
+
+        worker.finished.connect(on_upload_finished)
+        worker.start()
 
     def _show_upload_failure(self, error):
         details = error.details if hasattr(error, "details") else {"error": str(error)}

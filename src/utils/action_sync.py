@@ -54,13 +54,6 @@ def read_module_actions(client: DomoriksApiClient, module, timeout: float) -> Di
             exchange = client.read_holding_registers(module.node, start, REGS_PER_ACTION, timeout)
             regs = exchange.response.get("decoded_registers", [])
 
-            # Auto-detect firmware byte order on first read
-            if client.byte_swap is None and len(regs) >= 1:
-                _detect_byte_order(client, regs[0], i - 1, action_type)
-                # Re-read with correct byte swap applied
-                exchange = client.read_holding_registers(module.node, start, REGS_PER_ACTION, timeout)
-                regs = exchange.response.get("decoded_registers", [])
-
             result[name] = _registers_to_action(name, regs)
 
     for i in range(1, int(module.num_extra_actions) + 1):
@@ -85,7 +78,7 @@ def upload_module_actions(client: DomoriksApiClient, module, timeout: float) -> 
         save_flag = 1 if i == len(steps) else 0
         regs = _action_to_registers(step.action, step.index, step.action_type, save_flag)
         try:
-            client.write_multiple_registers(module.node, 0, regs, timeout)
+            client.write_multiple_registers(module.node, step.start_address, regs, timeout)
         except ApiError as exc:
             details = {
                 "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -117,7 +110,7 @@ def upload_changed_actions(client: DomoriksApiClient, module, changed_steps: Lis
         save_flag = 1 if i == len(changed_steps) else 0
         regs = _action_to_registers(step.action, step.index, step.action_type, save_flag)
         try:
-            client.write_multiple_registers(module.node, 0, regs, timeout)
+            client.write_multiple_registers(module.node, step.start_address, regs, timeout)
         except ApiError as exc:
             details = {
                 "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -210,6 +203,21 @@ def _registers_to_action(name: str, registers: List[int]) -> EventAction:
     if len(registers) < 7:
         raise ApiError("Read action payload too short", {"decoded_registers": registers})
 
+    # Erased flash commonly returns 0xFF fields (with reg0 still containing index/type).
+    # Treat that as an empty/default action instead of surfacing invalid values.
+    if _is_erased_action_payload(registers):
+        return EventAction(
+            name,
+            action="nop",
+            delay_action="nop",
+            delay=0,
+            brightness=100,
+            node=0,
+            output=0,
+            send=0,
+            extra_action_index=0,
+        )
+
     action_code = (registers[1] >> 8) & 0xFF
     delay_action_code = registers[1] & 0xFF
     delay_value = ((registers[2] & 0xFFFF) << 16) | (registers[3] & 0xFFFF)
@@ -222,13 +230,29 @@ def _registers_to_action(name: str, registers: List[int]) -> EventAction:
     action = EventAction(name)
     action.action = EventAction.ACTIONS[action_code] if action_code < len(EventAction.ACTIONS) else "nop"
     action.delay_action = EventAction.ACTIONS[delay_action_code] if delay_action_code < len(EventAction.ACTIONS) else "nop"
-    action.delay = int(delay_value)
-    action.brightness = int(brightness)
-    action.node = int(node)
-    action.output = int(output)
-    action.send = int(send)
-    action.extra_action_index = int(extra)
+    action.delay = 0 if delay_value == 0xFFFFFFFF else int(delay_value)
+    action.brightness = int(brightness) if 0 <= int(brightness) <= 100 else 100
+    action.node = 0 if int(node) == 0xFF else int(node)
+    action.output = 0 if int(output) == 0xFF else int(output)
+    action.send = int(send) if int(send) in (0, 1, 2, 3) else 0
+    action.extra_action_index = 0 if int(extra) == 0xFF else int(extra)
     return action
+
+
+def _is_erased_action_payload(registers: List[int]) -> bool:
+    """True when register payload matches an erased flash action slot."""
+    if len(registers) < 7:
+        return False
+
+    # reg0 is index/type and is generated dynamically by firmware, so ignore it.
+    return (
+        registers[1] == 0xFFFF
+        and registers[2] == 0xFFFF
+        and registers[3] == 0xFFFF
+        and registers[4] == 0xFFFF
+        and registers[5] in (0xFFFF, 0xFF00)
+        and registers[6] in (0xFFFF, 0xFF00)
+    )
 
 
 def _action_to_dict(action: EventAction) -> Dict[str, Any]:
@@ -244,24 +268,3 @@ def _action_to_dict(action: EventAction) -> Dict[str, Any]:
     }
 
 
-def _detect_byte_order(client: DomoriksApiClient, reg0: int, expected_index: int, expected_action_type: int) -> None:
-    """Auto-detect firmware byte order by checking register[0] plausibility.
-
-    Register[0] should be (input_index << 8) | action_type.
-    If the bytes are swapped, it would be (action_type << 8) | input_index.
-    """
-    hi = (reg0 >> 8) & 0xFF
-    lo = reg0 & 0xFF
-
-    # Standard Modbus (new firmware): hi=input_index, lo=action_type
-    if hi == expected_index and lo == expected_action_type:
-        client.byte_swap = False
-        return
-
-    # Swapped (old firmware): hi=action_type, lo=input_index
-    if hi == expected_action_type and lo == expected_index:
-        client.byte_swap = True
-        return
-
-    # Cannot determine — assume new firmware (standard Modbus)
-    client.byte_swap = False

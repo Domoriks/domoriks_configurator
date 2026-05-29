@@ -14,6 +14,8 @@ class Project:
         self.api_base_url = ""
         self.api_token = ""
         self.api_token_session_only = False
+        self.connection_mode = "api"  # "api" or "serial"
+        self.serial_port = ""
         self.modified = False
 
     def add_module(self, module):
@@ -50,6 +52,10 @@ class Project:
             "token": self.api_token,
             "token_session_only": self.api_token_session_only,
         }
+        data["serial"] = {
+            "port": self.serial_port,
+        }
+        data["connection_mode"] = self.connection_mode
         return data
 
     def save_to_file(self, filepath, preserve_existing_token=False):
@@ -81,6 +87,10 @@ class Project:
         project.api_base_url = api_data.get("base_url", "") or ""
         project.api_token = api_data.get("token", "") or ""
         project.api_token_session_only = bool(api_data.get("token_session_only", False))
+
+        serial_data = data.get("serial", {}) if isinstance(data.get("serial", {}), dict) else {}
+        project.serial_port = serial_data.get("port", "") or ""
+        project.connection_mode = data.get("connection_mode", "api") or "api"
 
         # Support both "modules" and legacy "devices" key
         modules_data = data.get("modules", data.get("devices", []))

@@ -3,5 +3,6 @@ build/
 dist/
 .venv/
 scripts/
+.grill/
 
 Domotica_Config_*.json

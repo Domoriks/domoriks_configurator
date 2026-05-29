@@ -8,9 +8,16 @@ C-code ↔ GUI conversion.
 
 import sys
 import os
+import logging
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QIcon
 from gui.main_window import MainWindow
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    stream=sys.stdout,
+)
 
 def resource_path(relative_path):
     """

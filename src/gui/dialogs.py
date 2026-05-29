@@ -382,59 +382,134 @@ class ModuleDialog(QDialog):
 
 
 class ApiSettingsDialog(QDialog):
-    """Dialog for API base URL and token settings."""
+    """Dialog for connection settings (API or Serial)."""
 
-    def __init__(self, base_url="", token="", token_session_only=False, parent=None):
+    def __init__(self, base_url="", token="", token_session_only=False,
+                 connection_mode="api", serial_port="", parent=None):
         super().__init__(parent)
-        self.setWindowTitle("API Settings")
+        self.setWindowTitle("Connection Settings")
         self.setMinimumWidth(520)
         self._token_session_only = bool(token_session_only)
-        self.setup_ui(base_url, token)
+        self.setup_ui(base_url, token, connection_mode, serial_port)
 
-    def setup_ui(self, base_url, token):
-        layout = QFormLayout()
+    def setup_ui(self, base_url, token, connection_mode, serial_port):
+        root = QVBoxLayout()
+
+        # --- Mode selector ---
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("Mode:"))
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("API (Home Assistant)", "api")
+        self.mode_combo.addItem("Serial (USB RS-485)", "serial")
+        idx = self.mode_combo.findData(connection_mode)
+        if idx >= 0:
+            self.mode_combo.setCurrentIndex(idx)
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        mode_layout.addWidget(self.mode_combo)
+        mode_layout.addStretch()
+        root.addLayout(mode_layout)
+
+        # --- API settings ---
+        self.api_widget = QWidget()
+        api_layout = QFormLayout()
+        api_layout.setContentsMargins(0, 0, 0, 0)
 
         self.base_url_edit = QLineEdit(base_url or "")
         self.base_url_edit.setPlaceholderText("http://homeassistant.local:8123")
-        layout.addRow("Base URL:", self.base_url_edit)
+        api_layout.addRow("Base URL:", self.base_url_edit)
 
         self.token_edit = QLineEdit(token or "")
         self.token_edit.setEchoMode(QLineEdit.Password)
         self.token_edit.setPlaceholderText("Long-lived access token")
-        layout.addRow("API Token:", self.token_edit)
+        api_layout.addRow("API Token:", self.token_edit)
 
         self.session_only_check = QCheckBox("Session only: do not overwrite token in saved JSON")
         self.session_only_check.setChecked(self._token_session_only)
-        layout.addRow("", self.session_only_check)
+        api_layout.addRow("", self.session_only_check)
 
+        clean_btn = QPushButton("Clean Token")
+        clean_btn.clicked.connect(self._clean_token)
+        api_layout.addRow("", clean_btn)
+
+        self.api_widget.setLayout(api_layout)
+        root.addWidget(self.api_widget)
+
+        # --- Serial settings ---
+        self.serial_widget = QWidget()
+        serial_layout = QFormLayout()
+        serial_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.port_combo = QComboBox()
+        self.port_combo.setEditable(True)
+        self._refresh_ports(serial_port)
+        serial_layout.addRow("COM Port:", self.port_combo)
+
+        refresh_btn = QPushButton("Refresh Ports")
+        refresh_btn.clicked.connect(lambda: self._refresh_ports(None))
+        serial_layout.addRow("", refresh_btn)
+
+        self.serial_widget.setLayout(serial_layout)
+        root.addWidget(self.serial_widget)
+
+        # --- Buttons ---
         button_layout = QHBoxLayout()
-        self.clean_button = QPushButton("Clean Token")
-        self.clean_button.clicked.connect(self._clean_token)
-        button_layout.addWidget(self.clean_button)
-
         button_layout.addStretch()
-
         save_btn = QPushButton("Save")
         save_btn.clicked.connect(self.accept)
         button_layout.addWidget(save_btn)
-
         cancel_btn = QPushButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
         button_layout.addWidget(cancel_btn)
-
-        root = QVBoxLayout()
-        root.addLayout(layout)
         root.addLayout(button_layout)
+
         self.setLayout(root)
+        self._on_mode_changed()
+
+    def _on_mode_changed(self):
+        is_api = self.mode_combo.currentData() == "api"
+        self.api_widget.setVisible(is_api)
+        self.serial_widget.setVisible(not is_api)
+
+    def _refresh_ports(self, select_port):
+        from utils.domoriks_serial import find_stlink_vcp_port, list_serial_port_infos
+
+        current = (select_port or self.port_combo.currentData() or self.port_combo.currentText() or "").strip()
+        if current and " " in current and current.upper().startswith("COM"):
+            current = current.split(" ", 1)[0]
+
+        self.port_combo.clear()
+
+        infos = list_serial_port_infos()
+        for info in infos:
+            label = info.device
+            if info.description and info.description != info.device:
+                label = f"{info.device} - {info.description}"
+            self.port_combo.addItem(label, info.device)
+
+        target = current or find_stlink_vcp_port()
+        if target:
+            idx = self.port_combo.findData(target)
+            if idx >= 0:
+                self.port_combo.setCurrentIndex(idx)
+            else:
+                self.port_combo.setEditText(target)
 
     def _clean_token(self):
         self.token_edit.clear()
 
     def get_settings(self):
+        serial_port = (self.port_combo.currentData() or "").strip()
+        if not serial_port:
+            serial_port = self.port_combo.currentText().strip()
+            if serial_port and " " in serial_port and serial_port.upper().startswith("COM"):
+                serial_port = serial_port.split(" ", 1)[0]
+
         return {
+            "connection_mode": self.mode_combo.currentData(),
             "base_url": self.base_url_edit.text().strip(),
             "token": self.token_edit.text().strip(),
             "token_session_only": self.session_only_check.isChecked(),
+            "serial_port": serial_port,
         }
 
 
@@ -449,17 +524,17 @@ class BusDetectDialog(QDialog):
 
         self.start_spin = QSpinBox()
         self.start_spin.setRange(0, 255)
-        self.start_spin.setValue(0)
+        self.start_spin.setValue(1)
         layout.addRow("Start slave:", self.start_spin)
 
         self.end_spin = QSpinBox()
         self.end_spin.setRange(0, 255)
-        self.end_spin.setValue(255)
+        self.end_spin.setValue(247)
         layout.addRow("End slave:", self.end_spin)
 
         self.timeout_spin = QSpinBox()
         self.timeout_spin.setRange(1, 30000)
-        self.timeout_spin.setValue(1000)
+        self.timeout_spin.setValue(50)
         self.timeout_spin.setSuffix(" ms")
         layout.addRow("Timeout:", self.timeout_spin)
 
@@ -485,16 +560,14 @@ class BusDetectDialog(QDialog):
 
 
 class JsonSideBySideDiffDialog(QDialog):
-    """Show side-by-side colored JSON diff with accept/deny and byte-order toggle."""
+    """Show side-by-side colored JSON diff with accept/deny."""
 
-    def __init__(self, left_title, right_title, left_json, right_json, parent=None,
-                 refresh_callback=None):
+    def __init__(self, left_title, right_title, left_json, right_json, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Review Device Config")
         self.setMinimumSize(1200, 700)
         self._left_title = left_title
         self._right_title = right_title
-        self._refresh_callback = refresh_callback
         self.device_actions = None
 
         self.left_view = QTextEdit()
@@ -516,15 +589,6 @@ class JsonSideBySideDiffDialog(QDialog):
         deny_btn.clicked.connect(self.reject)
         button_layout.addWidget(deny_btn)
 
-        if refresh_callback:
-            button_layout.addStretch()
-            button_layout.addWidget(QLabel("Byte Order:"))
-            self.byte_order_combo = QComboBox()
-            self.byte_order_combo.addItems(["Auto Detect", "Standard (new FW)", "Swapped (old FW)"])
-            self.byte_order_combo.setToolTip("Change byte order and re-read device registers")
-            self.byte_order_combo.currentIndexChanged.connect(self._on_byte_order_changed)
-            button_layout.addWidget(self.byte_order_combo)
-
         button_layout.addStretch()
         accept_btn = QPushButton("Accept")
         accept_btn.clicked.connect(self.accept)
@@ -541,18 +605,6 @@ class JsonSideBySideDiffDialog(QDialog):
         )
         self.left_view.setHtml(left_html)
         self.right_view.setHtml(right_html)
-
-    def _on_byte_order_changed(self, index):
-        if not self._refresh_callback:
-            return
-        byte_swap_map = {0: None, 1: False, 2: True}
-        byte_swap = byte_swap_map[index]
-        try:
-            left_json, right_json, actions = self._refresh_callback(byte_swap)
-            self.device_actions = actions
-            self._update_diff(left_json, right_json)
-        except Exception as e:
-            QMessageBox.warning(self, "Refresh Error", f"Failed to re-read device: {e}")
 
 
 class ErrorDetailsDialog(QDialog):
@@ -594,6 +646,7 @@ class DetectResultsDialog(QDialog):
     """Show bus detect results and allow adding missing devices."""
 
     add_requested = pyqtSignal(int)
+    delete_requested = pyqtSignal(int)
 
     def __init__(self, reachable, unreachable, project_nodes=None, parent=None):
         super().__init__(parent)
@@ -623,10 +676,24 @@ class DetectResultsDialog(QDialog):
             self.table.setItem(row, 0, QTableWidgetItem(str(slave)))
             self.table.setItem(row, 1, QTableWidgetItem("Reachable" if is_reachable else "Not responding"))
             self.table.setItem(row, 2, QTableWidgetItem("Yes" if in_project else "No"))
-            action_btn = QPushButton("Add device" if not in_project else "In project")
-            action_btn.setEnabled(not in_project and is_reachable)
-            action_btn.clicked.connect(lambda checked=False, s=slave: self.add_requested.emit(s))
-            self.table.setCellWidget(row, 3, action_btn)
+
+            if is_reachable and not in_project:
+                action_btn = QPushButton("Add device")
+                action_btn.setEnabled(True)
+                action_btn.clicked.connect(lambda checked=False, s=slave: self.add_requested.emit(s))
+                self.table.setCellWidget(row, 3, action_btn)
+            elif (not is_reachable) and in_project:
+                action_btn = QPushButton("Delete from project")
+                action_btn.setEnabled(True)
+                action_btn.clicked.connect(lambda checked=False, s=slave: self.delete_requested.emit(s))
+                self.table.setCellWidget(row, 3, action_btn)
+            elif is_reachable and in_project:
+                action_btn = QPushButton("In project")
+                action_btn.setEnabled(False)
+                self.table.setCellWidget(row, 3, action_btn)
+            else:
+                # Not reachable and not in project: hide action.
+                self.table.setCellWidget(row, 3, QWidget())
 
         root.addWidget(self.table)
 
