@@ -32,13 +32,50 @@ class DomoriksApiClient:
         self.token = token or ""
         self.byte_swap: Optional[bool] = None  # None = not yet detected
 
-    def detect_range(self, start_slave: int, end_slave: int, timeout: float) -> Dict[str, Any]:
-        payload = {
-            "start_slave": int(start_slave),
-            "end_slave": int(end_slave),
-            "timeout": float(timeout),
-        }
-        return self._post_json("/api/domoriks/detect", payload)
+    def detect_range(self, start_slave: int, end_slave: int, timeout: float, progress_callback=None) -> Dict[str, Any]:
+        """Detect slaves in range with progress callback.
+        
+        Pings each slave individually via raw endpoint for real per-slave progress.
+        progress_callback(slave: int) called after each slave is tested.
+        """
+        reachable = []
+        unreachable = []
+        
+        for slave in range(int(start_slave), int(end_slave) + 1):
+            if self._ping_slave(slave, timeout):
+                reachable.append(slave)
+            else:
+                unreachable.append(slave)
+            
+            if progress_callback:
+                progress_callback(slave)
+        
+        return {"reachable": reachable, "unreachable": unreachable}
+    
+    def _ping_slave(self, slave: int, timeout: float) -> bool:
+        """Send read_coils(0, 1) to check if slave responds."""
+        try:
+            payload = struct.pack(">HH", 0, 1)  # start=0, count=1
+            frame = _encode_modbus_rtu_frame(int(slave), 0x01, payload)  # FC 0x01 = read coils
+            exchange = self.raw(frame.hex(), timeout)
+            
+            response = exchange.response.get("response")
+            if response is None:
+                return False
+            
+            # Validate response format: {function, payload, ...}
+            function = int(response.get("function", 0))
+            # Exception response has MSB set
+            if function & 0x80:
+                return False
+            
+            # Check function matches
+            if function != 0x01:
+                return False
+            
+            return True
+        except Exception:
+            return False
 
     def raw(self, frame_hex: str, timeout: float) -> RawExchange:
         payload = {

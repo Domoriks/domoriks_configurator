@@ -40,8 +40,14 @@ class ActionStep:
     action: EventAction
 
 
-def read_module_actions(client: DomoriksApiClient, module, timeout: float) -> Dict[str, EventAction]:
+def read_module_actions(client: DomoriksApiClient, module, timeout: float, progress_callback=None) -> Dict[str, EventAction]:
+    """Read module actions from device. 
+    
+    progress_callback(current, total) called after each action read.
+    """
     result: Dict[str, EventAction] = {}
+    total = int(module.num_inputs) * 5 + int(module.num_extra_actions)
+    current = 0
 
     for i in range(1, int(module.num_inputs) + 1):
         for press in ["singlePress", "doublePress", "longPress", "switchOn", "switchOff"]:
@@ -55,6 +61,9 @@ def read_module_actions(client: DomoriksApiClient, module, timeout: float) -> Di
             regs = exchange.response.get("decoded_registers", [])
 
             result[name] = _registers_to_action(name, regs)
+            current += 1
+            if progress_callback:
+                progress_callback(current, total)
 
     for i in range(1, int(module.num_extra_actions) + 1):
         name = f"extraAction{i}"
@@ -65,6 +74,9 @@ def read_module_actions(client: DomoriksApiClient, module, timeout: float) -> Di
         exchange = client.read_holding_registers(module.node, start, REGS_PER_ACTION, timeout)
         regs = exchange.response.get("decoded_registers", [])
         result[name] = _registers_to_action(name, regs)
+        current += 1
+        if progress_callback:
+            progress_callback(current, total)
 
     return result
 
@@ -102,7 +114,11 @@ def diff_module_actions(module, device_actions: Dict[str, EventAction]) -> List[
     return changed
 
 
-def upload_changed_actions(client: DomoriksApiClient, module, changed_steps: List[ActionStep], timeout: float) -> None:
+def upload_changed_actions(client: DomoriksApiClient, module, changed_steps: List[ActionStep], timeout: float, progress_callback=None) -> None:
+    """Upload changed actions to device.
+    
+    progress_callback(current, total) called after each action written.
+    """
     if not changed_steps:
         return
 
@@ -111,6 +127,8 @@ def upload_changed_actions(client: DomoriksApiClient, module, changed_steps: Lis
         regs = _action_to_registers(step.action, step.index, step.action_type, save_flag)
         try:
             client.write_multiple_registers(module.node, step.start_address, regs, timeout)
+            if progress_callback:
+                progress_callback(i, len(changed_steps))
         except ApiError as exc:
             details = {
                 "timestamp": datetime.utcnow().isoformat() + "Z",

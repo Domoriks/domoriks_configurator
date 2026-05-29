@@ -46,7 +46,7 @@ def resource_path(relative_path):
 
 
 class _DetectWorker(QThread):
-    """Run bus detection in a background thread."""
+    """Run bus detection in a background thread (serial)."""
     finished = pyqtSignal(object)  # dict result or Exception
     progress = pyqtSignal(int)  # current slave being scanned
 
@@ -85,9 +85,50 @@ class _DetectWorker(QThread):
             self.finished.emit(e)
 
 
+class _ApiDetectWorker(QThread):
+    """Run bus detection in a background thread (API)."""
+    finished = pyqtSignal(object)  # dict result or Exception
+    progress = pyqtSignal(int)  # current slave being scanned (simulated per-position)
+
+    def __init__(self, client, start_slave, end_slave, timeout):
+        super().__init__()
+        self._client = client
+        self._start = start_slave
+        self._end = end_slave
+        self._timeout = timeout
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            def progress_cb(slave):
+                if not self._cancelled:
+                    self.progress.emit(slave)
+
+            result = self._client.detect_range(self._start, self._end, self._timeout, progress_callback=progress_cb)
+            if not self._cancelled:
+                self.finished.emit(result)
+        except Exception as e:
+            if not self._cancelled:
+                self.finished.emit(e)
+
+
+class _ProgressUpdater:
+    """Thread-safe progress callback that emits Qt signals."""
+    def __init__(self, signal):
+        self.signal = signal
+    
+    def __call__(self, current, total):
+        """Callback(current, total) format for action read/write progress."""
+        self.signal.emit(current, total)
+
+
 class _TaskWorker(QThread):
-    """Run an arbitrary callable in a background thread."""
+    """Run an arbitrary callable in a background thread with optional progress."""
     finished = pyqtSignal(object)  # result or Exception
+    progress = pyqtSignal(int, int)  # (current, total) for action-level progress
 
     def __init__(self, fn, *args, **kwargs):
         super().__init__()
@@ -101,6 +142,10 @@ class _TaskWorker(QThread):
             self.finished.emit(result)
         except Exception as e:
             self.finished.emit(e)
+    
+    def get_progress_callback(self):
+        """Return a callback for pass to read/write functions."""
+        return _ProgressUpdater(self.progress)
 
 
 class MainWindow(QMainWindow):
@@ -982,62 +1027,57 @@ class MainWindow(QMainWindow):
         end_slave = values["end_slave"]
         timeout = values["timeout"]
 
-        # Use threaded detection for serial (iterates per-slave), blocking for API
+        # Use threaded detection for both serial and API to show consistent progress.
+        total = end_slave - start_slave + 1
+        progress = QProgressDialog(
+            f"Scanning slaves {start_slave}–{end_slave}...",
+            "Cancel", 0, total, self
+        )
+        progress.setWindowTitle("Detecting Bus")
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+
         if hasattr(client, '_ping_slave'):
-            total = end_slave - start_slave + 1
-            progress = QProgressDialog(
-                f"Scanning slaves {start_slave}–{end_slave}...",
-                "Cancel", 0, total, self
-            )
-            progress.setWindowTitle("Detecting Bus")
-            progress.setMinimumDuration(0)
-            progress.setValue(0)
-
             self._detect_worker = _DetectWorker(client, start_slave, end_slave, timeout)
-            self._detect_progress = progress
-
-            def on_progress(slave):
-                done = slave - start_slave + 1
-                progress.setValue(done)
-                progress.setLabelText(f"Scanned slave {slave} ({done}/{total})")
-
-            def on_finished(result):
-                # Prevent programmatic close from invoking cancel handler.
-                try:
-                    progress.canceled.disconnect(on_cancelled)
-                except Exception:
-                    pass
-                progress.close()
-                self._detect_worker.deleteLater()
-                self._close_client(client)
-                self._detect_worker = None
-                self._detect_progress = None
-                if self._detect_cancelled:
-                    return
-                if isinstance(result, Exception):
-                    QMessageBox.critical(self, "Detect Error", f"Failed to detect bus: {result}")
-                    return
-                self._show_detect_results(result)
-
-            def on_cancelled():
-                self._detect_cancelled = True
-                if self._detect_worker is not None:
-                    self._detect_worker.cancel()
-                progress.close()
-
-            self._detect_cancelled = False
-            self._detect_worker.progress.connect(on_progress)
-            self._detect_worker.finished.connect(on_finished)
-            progress.canceled.connect(on_cancelled)
-            self._detect_worker.start()
         else:
+            self._detect_worker = _ApiDetectWorker(client, start_slave, end_slave, timeout)
+
+        self._detect_progress = progress
+
+        def on_progress(slave):
+            done = slave - start_slave + 1
+            progress.setValue(done)
+            progress.setLabelText(f"Scanned slave {slave} ({done}/{total})")
+
+        def on_finished(result):
+            # Prevent programmatic close from invoking cancel handler.
             try:
-                result = client.detect_range(start_slave, end_slave, timeout)
-                self._show_detect_results(result)
-            except Exception as e:
-                QMessageBox.critical(self, "Detect Error", f"Failed to detect bus: {e}")
-            finally:
-                self._close_client(client)
+                progress.canceled.disconnect(on_cancelled)
+            except Exception:
+                pass
+            progress.close()
+            self._detect_worker.deleteLater()
+            self._close_client(client)
+            self._detect_worker = None
+            self._detect_progress = None
+            if self._detect_cancelled:
+                return
+            if isinstance(result, Exception):
+                QMessageBox.critical(self, "Detect Error", f"Failed to detect bus: {result}")
+                return
+            self._show_detect_results(result)
+
+        def on_cancelled():
+            self._detect_cancelled = True
+            if self._detect_worker is not None:
+                self._detect_worker.cancel()
+            progress.close()
+
+        self._detect_cancelled = False
+        self._detect_worker.progress.connect(on_progress)
+        self._detect_worker.finished.connect(on_finished)
+        progress.canceled.connect(on_cancelled)
+        self._detect_worker.start()
 
     def _show_detect_results(self, result):
         reachable = result.get("reachable", [])
@@ -1192,16 +1232,26 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Load Error", f"Failed to load device config: {e}")
             return
 
-        progress = QProgressDialog("Reading device actions...", None, 0, 0, self)
+        total_actions = int(module.num_inputs) * 5 + int(module.num_extra_actions)
+        progress = QProgressDialog(
+            "Reading device actions...",
+            None, 0, total_actions, self
+        )
         progress.setWindowTitle("Download from Device")
         progress.setMinimumDuration(0)
         progress.setCancelButton(None)
         progress.show()
 
         def do_read():
-            return read_module_actions(client, module, timeout=2.0)
+            progress_callback = worker.get_progress_callback()
+            return read_module_actions(client, module, timeout=2.0, progress_callback=progress_callback)
 
         worker = _TaskWorker(do_read)
+
+        def on_progress(current, total):
+            progress.setMaximum(total)
+            progress.setValue(current)
+            progress.setLabelText(f"Read {current} of {total} actions...")
 
         def on_finished(result):
             progress.close()
@@ -1212,6 +1262,7 @@ class MainWindow(QMainWindow):
                 return
             self._show_download_diff(module, result)
 
+        worker.progress.connect(on_progress)
         worker.finished.connect(on_finished)
         worker.start()
 
@@ -1292,8 +1343,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No Changes", f"No action differences for {module.name}.")
             return
 
-        # Upload in background thread
-        progress = QProgressDialog("Uploading actions...", None, 0, 0, self)
+        # Upload in background thread with per-action progress
+        progress = QProgressDialog(
+            "Uploading actions...",
+            None, 0, len(final_changed), self
+        )
         progress.setWindowTitle("Upload to Device")
         progress.setMinimumDuration(0)
         progress.setCancelButton(None)
@@ -1302,12 +1356,18 @@ class MainWindow(QMainWindow):
         def do_upload():
             c = self._get_api_client()
             try:
-                upload_changed_actions(c, module, final_changed, timeout=2.0)
+                progress_callback = worker.get_progress_callback()
+                upload_changed_actions(c, module, final_changed, timeout=2.0, progress_callback=progress_callback)
                 return len(final_changed)
             finally:
                 self._close_client(c)
 
         worker = _TaskWorker(do_upload)
+
+        def on_progress(current, total):
+            progress.setMaximum(total)
+            progress.setValue(current)
+            progress.setLabelText(f"Uploaded {current} of {total} actions...")
 
         def on_upload_finished(result):
             progress.close()
@@ -1320,6 +1380,7 @@ class MainWindow(QMainWindow):
                 return
             self.statusBar().showMessage(f"Uploaded {result} changed actions to {module.name}")
 
+        worker.progress.connect(on_progress)
         worker.finished.connect(on_upload_finished)
         worker.start()
 
